@@ -77,6 +77,25 @@
   }
   body {
     @apply bg-background text-foreground;
+    transition:
+      background-color 300ms ease,
+      color 300ms ease;
+  }
+}
+
+/* Cross-fade between routes (react-router viewTransition). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+  body {
+    transition: none;
   }
 }
 

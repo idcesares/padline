@@ -35,6 +35,18 @@ const schema = BlockNoteSchema.create({ blockSpecs: textBlockSpecs });
 
 type SyncStatus = "connecting" | "connected" | "disconnected";
 
+/** Pulsing text-line placeholder shown while the document loads. */
+function PadSkeleton() {
+  return (
+    <div className="flex animate-pulse flex-col gap-3 pt-1" aria-hidden>
+      <div className="h-7 w-3/5 rounded-md bg-muted" />
+      <div className="h-4 w-full rounded-md bg-muted" />
+      <div className="h-4 w-11/12 rounded-md bg-muted" />
+      <div className="h-4 w-4/6 rounded-md bg-muted" />
+    </div>
+  );
+}
+
 export default function Pad() {
   const { slug = "" } = useParams();
   const [searchParams] = useSearchParams();
@@ -90,7 +102,11 @@ function PadGate({ slug }: { slug: string }) {
   }, [slug]);
 
   if (state.kind === "loading") {
-    return <main className="min-h-svh" aria-busy />;
+    return (
+      <main className="mx-auto w-full max-w-3xl px-4 pt-20" aria-busy>
+        <PadSkeleton />
+      </main>
+    );
   }
 
   if (state.kind === "pin") {
@@ -195,7 +211,15 @@ function PadEditor({
   const [status, setStatus] = useState<SyncStatus>("connecting");
   const [pinProtected, setPinProtected] = useState(false);
   const [token, setToken] = useState(authToken);
+  const [ready, setReady] = useState(false);
   const readOnly = !!roToken;
+
+  useEffect(() => {
+    document.title = `/${slug} — Padline`;
+    return () => {
+      document.title = "Padline";
+    };
+  }, [slug]);
 
   useEffect(() => {
     fetchPadInfo(slug)
@@ -206,10 +230,21 @@ function PadEditor({
   // ADR: local resilience — every visited pad is cached in IndexedDB.
   useEffect(() => {
     const persistence = new IndexeddbPersistence(`padline:${slug}`, doc);
+    // A cached copy with content is enough to show the editor immediately.
+    void persistence.whenSynced.then(() => {
+      if (doc.getXmlFragment("document").length > 0) setReady(true);
+    });
     return () => {
       void persistence.destroy();
     };
   }, [slug, doc]);
+
+  // Show the editor once the server has synced; never block longer than 4s
+  // (offline first visits would otherwise stare at a skeleton forever).
+  useEffect(() => {
+    const timer = setTimeout(() => setReady(true), 4000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const provider = useYProvider({
     party: "pad-room",
@@ -222,6 +257,14 @@ function PadEditor({
       },
     },
   });
+
+  useEffect(() => {
+    const onSync = (synced: boolean) => {
+      if (synced) setReady(true);
+    };
+    provider.on("sync", onSync as never);
+    return () => provider.off("sync", onSync as never);
+  }, [provider]);
 
   useEffect(() => {
     const onStatus = ({ status }: { status: SyncStatus }) => setStatus(status);
@@ -273,7 +316,7 @@ function PadEditor({
   return (
     <div className="flex min-h-svh flex-col">
       <header className="sticky top-0 z-10 flex h-12 items-center justify-between border-b bg-background/80 px-4 backdrop-blur">
-        <Link to="/" className="flex items-center gap-2 font-medium">
+        <Link to="/" viewTransition className="flex items-center gap-2 font-medium">
           <PenLine className="size-4" aria-hidden />
           <span>Padline</span>
         </Link>
@@ -316,8 +359,20 @@ function PadEditor({
           <PadMenu slug={slug} getMarkdown={getMarkdown} />
         </div>
       </header>
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
-        <BlockNoteView editor={editor} theme={theme} editable={!readOnly} />
+      <main className="relative mx-auto w-full max-w-3xl flex-1 px-4 py-8">
+        {!ready && (
+          <div className="absolute inset-x-4 top-8">
+            <PadSkeleton />
+          </div>
+        )}
+        <div
+          className={cn(
+            "transition-all duration-500",
+            ready ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
+          )}
+        >
+          <BlockNoteView editor={editor} theme={theme} editable={!readOnly} />
+        </div>
       </main>
     </div>
   );

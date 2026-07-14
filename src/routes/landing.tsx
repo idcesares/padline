@@ -10,10 +10,12 @@ export default function Landing() {
   const { theme, toggleTheme } = useTheme();
   const [path, setPath] = useState("");
 
+  const openPad = (slug: string) => navigate(`/${slug}`, { viewTransition: true });
+
   const openCustomPath = (e: React.FormEvent) => {
     e.preventDefault();
     const slug = normalizeSlug(path);
-    if (slug && isValidSlug(slug)) navigate(`/${slug}`);
+    if (slug && isValidSlug(slug)) openPad(slug);
   };
 
   return (
@@ -21,7 +23,7 @@ export default function Landing() {
       <div className="absolute right-4 top-4">
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
-      <div className="flex flex-col items-center gap-4 text-center">
+      <div className="flex animate-in flex-col items-center gap-4 text-center fade-in slide-in-from-bottom-3 duration-500 fill-mode-both">
         <div className="flex items-center gap-2.5">
           <PenLine className="size-8" aria-hidden />
           <h1 className="text-4xl font-semibold tracking-tight">Padline</h1>
@@ -32,18 +34,21 @@ export default function Landing() {
         </p>
       </div>
 
-      <div className="flex w-full max-w-sm flex-col gap-3">
+      <div className="flex w-full max-w-sm animate-in flex-col gap-3 fade-in slide-in-from-bottom-3 duration-500 delay-150 fill-mode-both">
         <button
           type="button"
-          onClick={() => navigate(`/${randomSlug()}`)}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-6 font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          onClick={() => openPad(randomSlug())}
+          className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-6 font-medium text-primary-foreground shadow-sm transition-all hover:bg-primary/90 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           New pad
-          <ArrowRight className="size-4" aria-hidden />
+          <ArrowRight
+            className="size-4 transition-transform group-hover:translate-x-0.5"
+            aria-hidden
+          />
         </button>
 
         <form onSubmit={openCustomPath} className="flex gap-2">
-          <div className="flex h-11 flex-1 items-center rounded-lg border bg-background pl-3 shadow-xs focus-within:ring-2 focus-within:ring-ring/50">
+          <div className="flex h-11 flex-1 items-center rounded-lg border bg-background pl-3 shadow-xs transition-shadow focus-within:ring-2 focus-within:ring-ring/50">
             <span className="text-muted-foreground">/</span>
             <input
               value={path}
@@ -55,7 +60,7 @@ export default function Landing() {
           </div>
           <button
             type="submit"
-            className="inline-flex h-11 items-center justify-center rounded-lg border bg-background px-4 font-medium shadow-xs transition-colors hover:bg-accent"
+            className="inline-flex h-11 items-center justify-center rounded-lg border bg-background px-4 font-medium shadow-xs transition-all hover:bg-accent active:scale-[0.98]"
           >
             Open
           </button>
