@@ -79,3 +79,9 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* BlockNote sits on the page's background, not its own tone. */
+.bn-container .bn-editor {
+  background: transparent;
+  padding-inline: 0;
+}

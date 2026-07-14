@@ -2,9 +2,12 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { ArrowRight, PenLine } from "lucide-react";
 import { randomSlug, normalizeSlug, isValidSlug } from "@/lib/slug";
+import { useTheme } from "@/hooks/use-theme";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export default function Landing() {
   const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const [path, setPath] = useState("");
 
   const openCustomPath = (e: React.FormEvent) => {
@@ -14,7 +17,10 @@ export default function Landing() {
   };
 
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-10 px-6">
+    <main className="relative flex min-h-svh flex-col items-center justify-center gap-10 px-6">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle theme={theme} onToggle={toggleTheme} />
+      </div>
       <div className="flex flex-col items-center gap-4 text-center">
         <div className="flex items-center gap-2.5">
           <PenLine className="size-8" aria-hidden />

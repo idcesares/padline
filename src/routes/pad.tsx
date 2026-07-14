@@ -11,6 +11,8 @@ import { PenLine } from "lucide-react";
 import { isValidSlug } from "@/lib/slug";
 import { getIdentity } from "@/lib/identity";
 import { cn } from "@/lib/utils";
+import { useTheme } from "@/hooks/use-theme";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 // ADR-0007: v1 is text-first — image/file/media blocks are disabled.
 const {
@@ -47,6 +49,7 @@ export default function Pad() {
 
 function PadEditor({ slug }: { slug: string }) {
   const identity = useMemo(getIdentity, []);
+  const { theme, toggleTheme } = useTheme();
   const [doc] = useState(() => new Y.Doc());
   const [status, setStatus] = useState<SyncStatus>("connecting");
 
@@ -59,7 +62,7 @@ function PadEditor({ slug }: { slug: string }) {
   }, [slug, doc]);
 
   const provider = useYProvider({
-    party: "padroom",
+    party: "pad-room",
     room: slug,
     doc,
   });
@@ -108,10 +111,11 @@ function PadEditor({ slug }: { slug: string }) {
           >
             {identity.name.split(" ").map((w) => w[0]).join("")}
           </span>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </header>
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
-        <BlockNoteView editor={editor} />
+        <BlockNoteView editor={editor} theme={theme} />
       </main>
     </div>
   );
