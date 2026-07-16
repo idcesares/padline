@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { ArrowRight, PenLine } from "lucide-react";
 import { randomSlug, normalizeSlug, isValidSlug } from "@/lib/slug";
 import { useTheme } from "@/hooks/use-theme";
@@ -66,6 +66,35 @@ export default function Landing() {
           </button>
         </form>
       </div>
+
+      <footer className="absolute inset-x-0 bottom-4 flex animate-in flex-col items-center gap-1 px-6 text-center text-xs text-muted-foreground fade-in duration-500 delay-300 fill-mode-both">
+        <nav className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+          <Link to="/terms" viewTransition className="transition-colors hover:text-foreground">
+            Terms
+          </Link>
+          <Link to="/privacy" viewTransition className="transition-colors hover:text-foreground">
+            Privacy
+          </Link>
+          <Link to="/content-policy" viewTransition className="transition-colors hover:text-foreground">
+            Content Policy
+          </Link>
+          <a
+            href="https://github.com/idcesares/padline"
+            className="transition-colors hover:text-foreground"
+          >
+            Open source
+          </a>
+        </nav>
+        <p>
+          © 2026{" "}
+          <a
+            href="https://github.com/idcesares"
+            className="transition-colors hover:text-foreground"
+          >
+            Isaac D'Césares
+          </a>
+        </p>
+      </footer>
     </main>
   );
 }

@@ -17,7 +17,11 @@ const ANIMALS = [
 ];
 
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
-const RESERVED_SLUGS = new Set(["api", "assets", "parties", "p", "r", "admin"]);
+const RESERVED_SLUGS = new Set([
+  "api", "assets", "parties", "p", "r", "admin",
+  // Policy pages (routed by the SPA, never pads).
+  "terms", "privacy", "content-policy", "legal", "about",
+]);
 
 export function isValidSlug(slug: string): boolean {
   return SLUG_PATTERN.test(slug) && !RESERVED_SLUGS.has(slug);
