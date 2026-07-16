@@ -69,6 +69,38 @@ Your instance is live at `https://padline.<your-subdomain>.workers.dev`. To use 
 
 **Recommended**: add a per-IP rate-limiting rule in the Cloudflare dashboard (Security → WAF → Rate limiting) as the outer layer against PIN brute-forcing — the app enforces per-pad backoff on its own, but defense in depth is cheap.
 
+### Moderation (takedowns)
+
+Operating a public instance means being able to act on content reports — the published [Content Policy](https://padline.dcesares.dev/content-policy) and [Privacy Policy](https://padline.dcesares.dev/privacy) both promise it. There's no dashboard and no pad registry by design (see [ADR-0010](docs/adr/0010-reactive-takedown-admin-ops.md)) — reports arrive by email with a URL, and you act on that one slug.
+
+**One-time setup**, before you need it:
+
+```sh
+npx wrangler secret put ADMIN_SECRET   # paste a long random value; store it in a password manager
+npm run deploy
+```
+
+Until this is done, the admin surface doesn't exist on your instance — every `admin-*` request answers exactly like an unknown op.
+
+**When a report email arrives** (content policy violation, or a privacy removal request), the slug is in the URL the reporter gave you:
+
+```sh
+# 1. Inspect — works even if the pad has a PIN, so a PIN can't block enforcement
+ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> info
+
+# 2. Act, based on what you saw:
+ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --block --reason "content policy: <why>"
+#   ^ policy violation: wipe content + snapshots AND block the slug so it can't be refilled
+ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal request"
+#   ^ privacy removal request: wipe content + snapshots, leave the slug free to reuse
+
+# 3. Reply to the reporter confirming action was taken.
+```
+
+`unblock` reverses a block if it was applied in error. `<host>` is your domain (e.g. `padline.dcesares.dev`) or `127.0.0.1:8791` locally.
+
+**Note:** the Content Policy and Privacy Policy both route reports to the same inbox as [SECURITY.md](SECURITY.md)'s vulnerability reports — triage by content: a bug/exploit goes through SECURITY.md's process, a bad pad goes through this one.
+
 ## Scripts
 
 | Command | What it does |
@@ -76,8 +108,9 @@ Your instance is live at `https://padline.<your-subdomain>.workers.dev`. To use 
 | `npm run dev` | Vite dev server with the Worker running locally |
 | `npm run build` | Typecheck + production build |
 | `npm run deploy` | Build + `wrangler deploy` |
-| `node scripts/api-smoke.mjs` | 22-check smoke suite against the local dev server |
+| `node scripts/api-smoke.mjs` | Smoke suite against the local dev server (set `ADMIN_SECRET` to also exercise the takedown lifecycle) |
 | `node scripts/api-smoke.mjs https://your-host` | Same suite against a deployed instance |
+| `node scripts/admin.mjs <host> <slug> <action>` | Moderation CLI: `info` / `block` / `unblock` / `purge` |
 
 ## Project structure
 

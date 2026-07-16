@@ -1,4 +1,4 @@
-export type PadInfo = { pinProtected: boolean };
+export type PadInfo = { pinProtected: boolean; removed?: boolean };
 export type SnapshotMeta = { id: number; createdAt: number; size: number };
 
 const base = (slug: string) => `/parties/pad-room/${slug}`;

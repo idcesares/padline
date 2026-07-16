@@ -11,6 +11,8 @@ import { isValidSlug } from "../src/lib/slug";
 type Env = {
   PadRoom: DurableObjectNamespace;
   ASSETS: Fetcher;
+  /** Bearer secret for op=admin-*; unset disables the admin surface entirely. */
+  ADMIN_SECRET?: string;
 };
 
 // ADR-0008: cheap-to-enforce, catastrophic-to-miss invariants.
@@ -32,6 +34,15 @@ const SNAPSHOT_KEEP = 100;
 type PinRecord = { salt: string; hash: string };
 type PinFails = { count: number; lastAt: number };
 type ConnState = { readonly: boolean; ip: string } | null;
+type BlockRecord = { at: number; reason?: string };
+
+// ADR-0010: content-policy takedown. Blocked pads refuse connections with
+// this code and the client renders a "removed" screen.
+const CLOSE_PAD_REMOVED = 4404;
+// Cap on the reason string persisted with a block and on the content
+// preview returned by admin-info.
+const ADMIN_REASON_MAX = 500;
+const ADMIN_TEXT_PREVIEW_MAX = 64 * 1024;
 
 function toBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
@@ -190,6 +201,12 @@ export class PadRoom extends YServer<Env> {
       conn.close(4400, "invalid-slug");
       return;
     }
+    // ADR-0010: takedown outranks every capability, including PIN sessions
+    // and read-only links.
+    if (await this.ctx.storage.get<BlockRecord>("blocked")) {
+      conn.close(CLOSE_PAD_REMOVED, "pad-removed");
+      return;
+    }
     const connections = [...this.getConnections()];
     if (connections.length > MAX_CONNECTIONS) {
       conn.close(1013, "pad-full");
@@ -260,6 +277,26 @@ export class PadRoom extends YServer<Env> {
     const url = new URL(request.url);
     const op = url.searchParams.get("op");
     const token = url.searchParams.get("token");
+
+    // ADR-0010: admin surface. Without a valid secret it is indistinguishable
+    // from an unknown op, and it is disabled entirely when no secret is set.
+    if (op?.startsWith("admin-")) {
+      if (!this.isAdmin(request)) {
+        return Response.json({ error: "unknown-op" }, { status: 404 });
+      }
+      return this.onAdminRequest(op, request);
+    }
+
+    // A blocked pad answers info (so the client can render the removed
+    // screen without connecting) and refuses everything else.
+    const blocked = await this.ctx.storage.get<BlockRecord>("blocked");
+    if (blocked) {
+      if (op === "info" && request.method === "GET") {
+        return Response.json({ pinProtected: false, removed: true });
+      }
+      return Response.json({ error: "pad-removed" }, { status: 410 });
+    }
+
     const pin = await this.ctx.storage.get<PinRecord>("pin");
 
     if (op === "info" && request.method === "GET") {
@@ -369,6 +406,109 @@ export class PadRoom extends YServer<Env> {
         key === "document" ? "XmlFragment" : "Map",
       );
       return Response.json({ ok: true });
+    }
+
+    return Response.json({ error: "unknown-op" }, { status: 404 });
+  }
+
+  // --- admin surface (ADR-0010): reactive takedown, addressed by slug ---
+
+  private isAdmin(request: Request): boolean {
+    const secret = this.env.ADMIN_SECRET;
+    if (!secret) return false;
+    const auth = request.headers.get("authorization") ?? "";
+    const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    return provided.length > 0 && safeEqual(provided, secret);
+  }
+
+  private closeAllConnections(): void {
+    for (const conn of this.getConnections()) {
+      conn.close(CLOSE_PAD_REMOVED, "pad-removed");
+    }
+  }
+
+  private async onAdminRequest(op: string, request: Request): Promise<Response> {
+    if (op === "admin-info" && request.method === "GET") {
+      const [pin, blocked, lastSnapshotAt, stored] = await Promise.all([
+        this.ctx.storage.get<PinRecord>("pin"),
+        this.ctx.storage.get<BlockRecord>("blocked"),
+        this.ctx.storage.get<number>("lastSnapshotAt"),
+        this.ctx.storage.get<Uint8Array>("doc"),
+      ]);
+      const snapshots = this.ctx.storage.sql
+        .exec("SELECT COUNT(*) AS n FROM snapshots")
+        .one().n as number;
+      // Inspect the persisted doc, not the live one: this is what moderation
+      // acts on, and it works even through a PIN (view-gated for visitors,
+      // not for enforcement).
+      let text = "";
+      if (stored) {
+        const probe = new Y.Doc();
+        Y.applyUpdate(probe, stored);
+        text = probe.getXmlFragment("document").toString();
+      }
+      return Response.json({
+        slug: this.name,
+        pinProtected: !!pin,
+        blocked: blocked ?? null,
+        docBytes: stored?.byteLength ?? 0,
+        snapshots,
+        lastSnapshotAt: lastSnapshotAt ?? null,
+        liveConnections: [...this.getConnections()].length,
+        text: text.slice(0, ADMIN_TEXT_PREVIEW_MAX),
+      });
+    }
+
+    if (op === "admin-block" && request.method === "POST") {
+      const body =
+        (await this.readJson<{ reason?: string }>(request)) ?? {};
+      const record: BlockRecord = { at: Date.now() };
+      if (typeof body.reason === "string" && body.reason.trim()) {
+        record.reason = body.reason.trim().slice(0, ADMIN_REASON_MAX);
+      }
+      await this.ctx.storage.put("blocked", record);
+      this.closeAllConnections();
+      return Response.json({ ok: true, blocked: record });
+    }
+
+    if (op === "admin-unblock" && request.method === "POST") {
+      await this.ctx.storage.delete("blocked");
+      return Response.json({ ok: true });
+    }
+
+    if (op === "admin-purge" && request.method === "POST") {
+      const body =
+        (await this.readJson<{ block?: boolean; reason?: string }>(request)) ??
+        {};
+      // Block before wiping so nobody reconnects into the gap; the block
+      // record itself survives the purge.
+      if (body.block) {
+        const record: BlockRecord = { at: Date.now() };
+        if (typeof body.reason === "string" && body.reason.trim()) {
+          record.reason = body.reason.trim().slice(0, ADMIN_REASON_MAX);
+        }
+        await this.ctx.storage.put("blocked", record);
+      }
+      this.closeAllConnections();
+      this.ctx.storage.sql.exec("DELETE FROM snapshots");
+      await this.ctx.storage.delete([
+        "doc",
+        "pin",
+        "sessions",
+        "roToken",
+        "lastSnapshotAt",
+        "pinFails",
+      ]);
+      // Reset the live doc too, or a warm room would resurrect content on
+      // the next connect. (unstable_replaceDocument can't target an empty
+      // snapshot — its UndoManager needs at least one root type.) Deleting
+      // in a transaction lets Yjs GC drop the content bytes.
+      const frag = this.document.getXmlFragment("document");
+      if (frag.length > 0) {
+        this.document.transact(() => frag.delete(0, frag.length));
+      }
+      this.docOverCap = false;
+      return Response.json({ ok: true, blocked: !!body.block });
     }
 
     return Response.json({ error: "unknown-op" }, { status: 404 });

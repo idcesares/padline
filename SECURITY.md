@@ -8,6 +8,8 @@ Report privately via [GitHub Security Advisories](https://github.com/idcesares/p
 
 Include what you found, how to reproduce it, and the impact you believe it has. You'll get an acknowledgment as soon as possible, and a fix or a clear response before any public disclosure is expected.
 
+**This process is for security vulnerabilities in the code** (auth bypass, XSS, escaping a cap, etc). A report about a specific pad's *content* — CSAM, harassment, spam, copyright — is a Content Policy matter, not a vulnerability: see [README § Moderation](README.md#moderation-takedowns) for the takedown runbook. Both land in the same inbox, so triage by content, not by which page the reporter used.
+
 ## Scope & security model
 
 Padline's model is documented in the ADRs — the most relevant:

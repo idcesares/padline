@@ -164,5 +164,105 @@ res = await fetch(`${HTTP}://${HOST}/reserved-check-${slug}`, {
 });
 check("spa: humans get the app shell", res.ok && (await res.text()).includes("root"));
 
+// 11. admin surface (ADR-0010): invisible without the secret…
+res = await fetch(`${base}?op=admin-info`);
+data = await res.json();
+check(
+  "admin: unauthenticated op looks like unknown-op (404)",
+  res.status === 404 && data.error === "unknown-op",
+);
+
+// …and, when ADMIN_SECRET is provided, the full takedown lifecycle.
+if (process.env.ADMIN_SECRET) {
+  const Y = await import("yjs");
+  const encoding = await import("lib0/encoding.js");
+  const adminSlug = `smoke-admin-${Math.random().toString(36).slice(2, 8)}`;
+  const adminBase = `${HTTP}://${HOST}/parties/pad-room/${adminSlug}`;
+  const headers = { authorization: `Bearer ${process.env.ADMIN_SECRET}` };
+  const admin = (op, method = "POST", body) =>
+    fetch(`${adminBase}?op=${op}`, {
+      method,
+      headers,
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+
+  // Write real content over the Yjs sync protocol (message: sync/update).
+  const doc = new Y.Doc();
+  const frag = doc.getXmlFragment("document");
+  const el = new Y.XmlElement("paragraph");
+  el.insert(0, [new Y.XmlText("REPORTED-CONTENT-SMOKE")]);
+  frag.insert(0, [el]);
+  const update = Y.encodeStateAsUpdate(doc);
+  await new Promise((resolve) => {
+    const sock = new WebSocket(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
+    sock.binaryType = "arraybuffer";
+    const bail = setTimeout(() => {
+      sock.close();
+      resolve();
+    }, 8000);
+    // Wait for the server's syncStep1 so onConnect has finished authorizing.
+    sock.addEventListener("message", () => {
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, 0); // messageSync
+      encoding.writeVarUint(enc, 2); // update
+      encoding.writeVarUint8Array(enc, update);
+      sock.send(encoding.toUint8Array(enc));
+      setTimeout(() => {
+        clearTimeout(bail);
+        sock.close();
+        resolve();
+      }, 500);
+    });
+    sock.addEventListener("error", () => {});
+  });
+  // Persistence is debounced (2s); wait it out before inspecting.
+  await new Promise((r) => setTimeout(r, 3500));
+
+  res = await admin("admin-info", "GET");
+  data = await res.json();
+  check(
+    "admin-info: sees content through the surface",
+    res.ok && data.text.includes("REPORTED-CONTENT-SMOKE") && data.docBytes > 0,
+    JSON.stringify({ docBytes: data.docBytes, snapshots: data.snapshots }),
+  );
+  check("admin-info: snapshot history exists", data.snapshots >= 1);
+
+  res = await admin("admin-block", "POST", { reason: "smoke test" });
+  check("admin-block: accepted", res.ok);
+
+  res = await fetch(`${adminBase}?op=info`);
+  data = await res.json();
+  check("blocked: public info reports removed", res.ok && data.removed === true);
+
+  ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
+  check("blocked: ws refused (4404)", ws.kind === "close" && ws.code === 4404, JSON.stringify(ws));
+
+  res = await admin("admin-unblock");
+  check("admin-unblock: accepted", res.ok);
+
+  ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
+  check("unblocked: ws connects again", ws.kind === "open", ws.kind);
+
+  res = await admin("admin-purge", "POST", { block: true, reason: "smoke test" });
+  check("admin-purge: accepted", res.ok);
+
+  res = await admin("admin-info", "GET");
+  data = await res.json();
+  check(
+    "purged: doc and snapshots wiped, block survives",
+    res.ok && data.docBytes === 0 && data.snapshots === 0 && data.blocked !== null,
+    JSON.stringify({ docBytes: data.docBytes, snapshots: data.snapshots, blocked: data.blocked }),
+  );
+
+  ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
+  check("purged+blocked: ws refused (4404)", ws.kind === "close" && ws.code === 4404, JSON.stringify(ws));
+
+  // Leave no blocked smoke pads behind.
+  res = await admin("admin-unblock");
+  check("cleanup: unblocked", res.ok);
+} else {
+  console.log("SKIP admin lifecycle (set ADMIN_SECRET to run it)");
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
