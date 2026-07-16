@@ -2,6 +2,30 @@
   "name": "padline",
   "private": true,
   "version": "0.1.0",
+  "description": "URL-first, no-account, real-time collaborative pads. A modern Dontpad successor.",
+  "author": {
+    "name": "Isaac D'Césares",
+    "email": "isaac.dcesares@gmail.com",
+    "url": "https://github.com/idcesares"
+  },
+  "license": "MIT",
+  "homepage": "https://padline.dcesares.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/idcesares/padline.git"
+  },
+  "bugs": "https://github.com/idcesares/padline/issues",
+  "keywords": [
+    "collaborative-editing",
+    "yjs",
+    "crdt",
+    "cloudflare-workers",
+    "durable-objects",
+    "blocknote",
+    "dontpad",
+    "notepad",
+    "real-time"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",

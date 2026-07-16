@@ -394,6 +394,7 @@ function ogResponse(slug: string, origin: string): Response {
 <meta charset="utf-8">
 <title>${title}</title>
 <meta name="description" content="${description}">
+<meta name="robots" content="noindex">
 <meta property="og:title" content="${title}">
 <meta property="og:description" content="${description}">
 <meta property="og:type" content="website">
