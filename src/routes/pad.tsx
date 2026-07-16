@@ -74,10 +74,33 @@ export default function Pad() {
   return <PadGate slug={slug} />;
 }
 
+/** Shown for pads taken down under the Content Policy (ADR-0010). */
+function PadRemoved({ slug }: { slug: string }) {
+  return (
+    <main className="flex min-h-svh flex-col items-center justify-center gap-3 px-6 text-center">
+      <h1 className="text-2xl font-semibold">This pad was removed</h1>
+      <p className="text-muted-foreground">
+        <span className="font-mono">/{slug}</span> is no longer available. Pads
+        that violate the{" "}
+        <Link to="/content-policy" className="underline underline-offset-4">
+          Content Policy
+        </Link>{" "}
+        may be removed.
+      </p>
+      <Link to="/" className="mt-2 underline underline-offset-4">
+        Back to Padline
+      </Link>
+    </main>
+  );
+}
+
 /** Resolves PIN protection before any document bytes are requested. */
 function PadGate({ slug }: { slug: string }) {
   const [state, setState] = useState<
-    { kind: "loading" } | { kind: "pin" } | { kind: "ready"; token?: string }
+    | { kind: "loading" }
+    | { kind: "pin" }
+    | { kind: "removed" }
+    | { kind: "ready"; token?: string }
   >({ kind: "loading" });
 
   useEffect(() => {
@@ -85,6 +108,10 @@ function PadGate({ slug }: { slug: string }) {
     fetchPadInfo(slug)
       .then((info) => {
         if (cancelled) return;
+        if (info.removed) {
+          setState({ kind: "removed" });
+          return;
+        }
         if (!info.pinProtected) {
           setState({ kind: "ready", token: undefined });
           return;
@@ -107,6 +134,10 @@ function PadGate({ slug }: { slug: string }) {
         <PadSkeleton />
       </main>
     );
+  }
+
+  if (state.kind === "removed") {
+    return <PadRemoved slug={slug} />;
   }
 
   if (state.kind === "pin") {
@@ -212,6 +243,7 @@ function PadEditor({
   const [pinProtected, setPinProtected] = useState(false);
   const [token, setToken] = useState(authToken);
   const [ready, setReady] = useState(false);
+  const [removed, setRemoved] = useState(false);
   const readOnly = !!roToken;
 
   useEffect(() => {
@@ -271,6 +303,9 @@ function PadEditor({
     const onClose = (event: unknown) => {
       const code = (event as { code?: number } | null)?.code;
       if (code === 4401 && onAuthRejected) onAuthRejected();
+      // ADR-0010: pad taken down while connected (also covers read-only
+      // links, which mount PadEditor without going through PadGate).
+      if (code === 4404) setRemoved(true);
     };
     provider.on("status", onStatus);
     provider.on("connection-close", onClose as never);
@@ -312,6 +347,10 @@ function PadEditor({
   };
 
   const getMarkdown = () => editor.blocksToMarkdownLossy(editor.document);
+
+  if (removed) {
+    return <PadRemoved slug={slug} />;
+  }
 
   return (
     <div className="flex min-h-svh flex-col">
