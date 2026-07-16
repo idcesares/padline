@@ -3,11 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Padline — URL-first, real-time collaborative pads. No accounts, no friction." />
+    <meta name="description" content="Padline — URL-first, real-time collaborative pads. No accounts, no friction. Open a URL, start typing, share the link." />
+    <meta name="author" content="Isaac D'Césares" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <meta property="og:site_name" content="Padline" />
+    <meta property="og:title" content="Padline — real-time collaborative pads" />
+    <meta property="og:description" content="URL-first, no-account collaborative pads. Open a URL, start typing, share the link." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://padline.dcesares.dev/" />
+    <meta name="twitter:card" content="summary" />
     <title>Padline</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Padline",
+        "url": "https://padline.dcesares.dev/",
+        "description": "URL-first, no-account, real-time collaborative pads.",
+        "applicationCategory": "Productivity",
+        "operatingSystem": "Any",
+        "offers": { "@type": "Offer", "price": "0" },
+        "license": "https://github.com/idcesares/padline/blob/main/LICENSE",
+        "author": {
+          "@type": "Person",
+          "name": "Isaac D'Césares",
+          "url": "https://github.com/idcesares"
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
