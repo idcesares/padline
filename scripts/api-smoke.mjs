@@ -79,8 +79,9 @@ check("verify-pin: wrong PIN rejected", res.status === 403);
 res = await fetch(`${base}?op=verify-pin`, { method: "POST", body: "{nope" });
 check("verify-pin: malformed JSON rejected (400)", res.status === 400);
 
-// 6c. brute-force backoff: after 5 failures, attempts are throttled (429)
-for (let i = 0; i < 4; i++) {
+// 6c. brute-force backoff: repeated failures get throttled (429).
+// 6 total failures → a 2s window, wide enough to outlast WAN latency.
+for (let i = 0; i < 5; i++) {
   await fetch(`${base}?op=verify-pin`, {
     method: "POST",
     body: JSON.stringify({ pin: "0000" }),
@@ -90,14 +91,6 @@ res = await fetch(`${base}?op=verify-pin`, {
   method: "POST",
   body: JSON.stringify({ pin: "1234" }),
 });
-if (res.status === 403) {
-  // High-latency runs can outlive the first 1s backoff window; the 403 above
-  // was counted as another failure, so the window is now 2s — retry at once.
-  res = await fetch(`${base}?op=verify-pin`, {
-    method: "POST",
-    body: JSON.stringify({ pin: "1234" }),
-  });
-}
 check("verify-pin: throttled after repeated failures (429)", res.status === 429);
 
 // wait out the backoff window (2s if the retry path above ran), then the
