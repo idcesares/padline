@@ -100,6 +100,10 @@ Your instance is live at `https://padline.<your-subdomain>.workers.dev`. To use 
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions (ADRs, smoke tests), and the PR flow. Security issues: see [SECURITY.md](SECURITY.md).
 
+## Policies
+
+The deployed service publishes its [Terms of Use](https://padline.dcesares.dev/terms), [Privacy Policy](https://padline.dcesares.dev/privacy), and [Content Policy](https://padline.dcesares.dev/content-policy) — plain-language pages served by the app itself (`src/routes/legal.tsx`). If you self-host, adapt them to your own deployment.
+
 ## License & author
 
 [MIT](LICENSE) © [Isaac D'Césares](https://github.com/idcesares)

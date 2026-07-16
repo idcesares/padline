@@ -134,6 +134,10 @@ check("ws: old read-only token rejected after rotate (4403)", ws.kind === "close
 ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${slug}?ro=${newRoToken}`);
 check("ws: rotated read-only token connects", ws.kind === "open", ws.kind);
 
+// 7c. reserved slugs (policy pages) can never become pads
+ws = await wsResult(`${WS}://${HOST}/parties/pad-room/terms`);
+check("ws: reserved slug rejected (4400)", ws.kind === "close" && ws.code === 4400, JSON.stringify(ws));
+
 // 8. snapshots list (requires auth on a pinned pad)
 res = await fetch(`${base}?op=snapshots&token=${token}`);
 data = await res.json();
