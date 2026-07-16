@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, Eye, Lock, LockOpen, Share2 } from "lucide-react";
+import { Check, Copy, Eye, Lock, LockOpen, RotateCcw, Share2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { fetchRoToken, removePin, setPin } from "@/lib/pad-api";
+import { fetchRoToken, removePin, rotateRoToken, setPin } from "@/lib/pad-api";
 
 function CopyRow({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
@@ -59,6 +59,19 @@ export function ShareDialog({
       setRoLink(`${padUrl}?v=${roToken}`);
     } catch {
       setError("Couldn't create the read-only link.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetRoLink = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const roToken = await rotateRoToken(slug, token);
+      setRoLink(`${padUrl}?v=${roToken}`);
+    } catch {
+      setError("Couldn't reset the read-only link.");
     } finally {
       setBusy(false);
     }
@@ -117,7 +130,19 @@ export function ShareDialog({
 
           <div className="flex flex-col gap-1.5">
             {roLink ? (
-              <CopyRow label="Read-only link" value={roLink} />
+              <>
+                <CopyRow label="Read-only link" value={roLink} />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetRoLink}
+                  disabled={busy}
+                  className="self-start text-muted-foreground"
+                >
+                  <RotateCcw className="size-3.5" />
+                  Reset link — previously shared copies stop working
+                </Button>
+              </>
             ) : (
               <>
                 <Label>Read-only link</Label>

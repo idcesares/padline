@@ -75,6 +75,25 @@ res = await fetch(`${base}?op=verify-pin`, {
 });
 check("verify-pin: wrong PIN rejected", res.status === 403);
 
+// 6b. malformed JSON → 400, not a crash
+res = await fetch(`${base}?op=verify-pin`, { method: "POST", body: "{nope" });
+check("verify-pin: malformed JSON rejected (400)", res.status === 400);
+
+// 6c. brute-force backoff: after 5 failures, attempts are throttled (429)
+for (let i = 0; i < 4; i++) {
+  await fetch(`${base}?op=verify-pin`, {
+    method: "POST",
+    body: JSON.stringify({ pin: "0000" }),
+  });
+}
+res = await fetch(`${base}?op=verify-pin`, {
+  method: "POST",
+  body: JSON.stringify({ pin: "1234" }),
+});
+check("verify-pin: throttled after repeated failures (429)", res.status === 429);
+
+// backoff at 5 failures is 1s — wait it out, then the right PIN works
+await new Promise((r) => setTimeout(r, 1500));
 res = await fetch(`${base}?op=verify-pin`, {
   method: "POST",
   body: JSON.stringify({ pin: "1234" }),
@@ -96,6 +115,24 @@ check("ws: read-only token connects", ws.kind === "open", ws.kind);
 
 ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${slug}?ro=wrong`);
 check("ws: bad read-only token rejected (4403)", ws.kind === "close" && ws.code === 4403, JSON.stringify(ws));
+
+// 7b. rotate the read-only token: old link dies, new one works
+res = await fetch(`${base}?op=ro-token`, { method: "POST" });
+check("ro-token rotate: rejected without auth", res.status === 401);
+
+res = await fetch(`${base}?op=ro-token&token=${token}`, { method: "POST" });
+data = await res.json();
+const newRoToken = data.token;
+check(
+  "ro-token rotate: mints a different token",
+  res.ok && typeof newRoToken === "string" && newRoToken !== roToken,
+);
+
+ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${slug}?ro=${roToken}`);
+check("ws: old read-only token rejected after rotate (4403)", ws.kind === "close" && ws.code === 4403, JSON.stringify(ws));
+
+ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${slug}?ro=${newRoToken}`);
+check("ws: rotated read-only token connects", ws.kind === "open", ws.kind);
 
 // 8. snapshots list (requires auth on a pinned pad)
 res = await fetch(`${base}?op=snapshots&token=${token}`);
