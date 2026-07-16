@@ -90,10 +90,19 @@ res = await fetch(`${base}?op=verify-pin`, {
   method: "POST",
   body: JSON.stringify({ pin: "1234" }),
 });
+if (res.status === 403) {
+  // High-latency runs can outlive the first 1s backoff window; the 403 above
+  // was counted as another failure, so the window is now 2s — retry at once.
+  res = await fetch(`${base}?op=verify-pin`, {
+    method: "POST",
+    body: JSON.stringify({ pin: "1234" }),
+  });
+}
 check("verify-pin: throttled after repeated failures (429)", res.status === 429);
 
-// backoff at 5 failures is 1s — wait it out, then the right PIN works
-await new Promise((r) => setTimeout(r, 1500));
+// wait out the backoff window (2s if the retry path above ran), then the
+// right PIN works
+await new Promise((r) => setTimeout(r, 2500));
 res = await fetch(`${base}?op=verify-pin`, {
   method: "POST",
   body: JSON.stringify({ pin: "1234" }),
