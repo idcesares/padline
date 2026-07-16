@@ -70,6 +70,19 @@ export async function fetchRoToken(
   return data.token;
 }
 
+/** Mints a new read-only token; previously shared links stop working. */
+export async function rotateRoToken(
+  slug: string,
+  token?: string,
+): Promise<string> {
+  const res = await fetch(withParams(slug, { op: "ro-token", token }), {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("ro-token-rotate-failed");
+  const data = (await res.json()) as { token: string };
+  return data.token;
+}
+
 export async function fetchSnapshots(
   slug: string,
   token?: string,

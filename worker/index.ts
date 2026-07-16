@@ -6,6 +6,7 @@ import {
 } from "partyserver";
 import { YServer } from "y-partyserver";
 import * as Y from "yjs";
+import { isValidSlug } from "../src/lib/slug";
 
 type Env = {
   PadRoom: DurableObjectNamespace;
@@ -16,21 +17,21 @@ type Env = {
 const MAX_DOC_BYTES = 2 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_CONNECTIONS = 50;
+const MAX_CONNECTIONS_PER_IP = 8;
 const MAX_SESSIONS = 200;
+
+// ADR-0009: PIN brute-force backoff and session lifetime.
+const PIN_FREE_ATTEMPTS = 5;
+const PIN_BACKOFF_MAX_MS = 60_000;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ADR-0006: snapshot cadence and retention.
 const SNAPSHOT_MIN_INTERVAL_MS = 60_000;
 const SNAPSHOT_KEEP = 100;
 
-export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
-const RESERVED_SLUGS = new Set(["api", "assets", "parties", "p", "r", "admin"]);
-
-export function isValidSlug(slug: string): boolean {
-  return SLUG_PATTERN.test(slug) && !RESERVED_SLUGS.has(slug);
-}
-
 type PinRecord = { salt: string; hash: string };
-type ConnState = { readonly: boolean } | null;
+type PinFails = { count: number; lastAt: number };
+type ConnState = { readonly: boolean; ip: string } | null;
 
 function toBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
@@ -141,7 +142,38 @@ export class PadRoom extends YServer<Env> {
   private async isValidSession(token: string): Promise<boolean> {
     const sessions =
       await this.ctx.storage.get<Record<string, number>>("sessions");
-    return !!sessions?.[token];
+    const grantedAt = sessions?.[token];
+    if (grantedAt === undefined) return false;
+    if (Date.now() - grantedAt > SESSION_TTL_MS) {
+      delete sessions![token];
+      await this.ctx.storage.put("sessions", sessions);
+      return false;
+    }
+    return true;
+  }
+
+  // --- PIN brute-force backoff (ADR-0009) ---
+
+  /** Milliseconds the caller must still wait before the next PIN attempt. */
+  private async pinRetryDelay(): Promise<number> {
+    const fails = await this.ctx.storage.get<PinFails>("pinFails");
+    if (!fails || fails.count < PIN_FREE_ATTEMPTS) return 0;
+    const wait = Math.min(
+      1000 * 2 ** (fails.count - PIN_FREE_ATTEMPTS),
+      PIN_BACKOFF_MAX_MS,
+    );
+    return Math.max(0, fails.lastAt + wait - Date.now());
+  }
+
+  private async recordPinFailure(): Promise<void> {
+    const fails = (await this.ctx.storage.get<PinFails>("pinFails")) ?? {
+      count: 0,
+      lastAt: 0,
+    };
+    await this.ctx.storage.put("pinFails", {
+      count: fails.count + 1,
+      lastAt: Date.now(),
+    });
   }
 
   /** Edit access: no PIN set, or a valid session token. */
@@ -158,9 +190,21 @@ export class PadRoom extends YServer<Env> {
       conn.close(4400, "invalid-slug");
       return;
     }
-    if ([...this.getConnections()].length > MAX_CONNECTIONS) {
+    const connections = [...this.getConnections()];
+    if (connections.length > MAX_CONNECTIONS) {
       conn.close(1013, "pad-full");
       return;
+    }
+    // ADR-0008: per-IP cap (header absent in local dev — skipped there).
+    const ip = ctx.request.headers.get("cf-connecting-ip") ?? "";
+    if (ip) {
+      const sameIp = connections.filter(
+        (c) => c !== conn && (c.state as ConnState)?.ip === ip,
+      ).length;
+      if (sameIp >= MAX_CONNECTIONS_PER_IP) {
+        conn.close(1013, "too-many-connections");
+        return;
+      }
     }
     const url = new URL(ctx.request.url);
     const ro = url.searchParams.get("ro");
@@ -170,13 +214,13 @@ export class PadRoom extends YServer<Env> {
         conn.close(4403, "invalid-token");
         return;
       }
-      conn.setState({ readonly: true });
+      conn.setState({ readonly: true, ip });
     } else {
       if (!(await this.canEdit(url.searchParams.get("token")))) {
         conn.close(4401, "pin-required");
         return;
       }
-      conn.setState({ readonly: false });
+      conn.setState({ readonly: false, ip });
     }
     super.onConnect(conn, ctx);
   }
@@ -190,7 +234,9 @@ export class PadRoom extends YServer<Env> {
 
   onMessage(conn: Connection, message: string | ArrayBuffer | ArrayBufferView) {
     const size =
-      typeof message === "string" ? message.length : message.byteLength;
+      typeof message === "string"
+        ? new TextEncoder().encode(message).byteLength
+        : message.byteLength;
     if (size > MAX_MESSAGE_BYTES) {
       conn.close(1009, "message-too-large");
       return;
@@ -201,6 +247,14 @@ export class PadRoom extends YServer<Env> {
   }
 
   // --- HTTP surface: /parties/pad-room/:slug?op=... ---
+
+  private async readJson<T>(request: Request): Promise<T | null> {
+    try {
+      return (await request.json()) as T;
+    } catch {
+      return null;
+    }
+  }
 
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -214,12 +268,25 @@ export class PadRoom extends YServer<Env> {
 
     if (op === "verify-pin" && request.method === "POST") {
       if (!pin) return Response.json({ error: "no-pin" }, { status: 400 });
-      const body = (await request.json()) as { pin?: string };
+      const retryIn = await this.pinRetryDelay();
+      if (retryIn > 0) {
+        return Response.json(
+          { error: "too-many-attempts", retryInMs: retryIn },
+          {
+            status: 429,
+            headers: { "retry-after": String(Math.ceil(retryIn / 1000)) },
+          },
+        );
+      }
+      const body = await this.readJson<{ pin?: string }>(request);
+      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
       const candidate = typeof body.pin === "string" ? body.pin : "";
       const hashed = await hashPin(candidate, pin.salt);
       if (!safeEqual(hashed.hash, pin.hash)) {
+        await this.recordPinFailure();
         return Response.json({ error: "wrong-pin" }, { status: 403 });
       }
+      await this.ctx.storage.delete("pinFails");
       return Response.json({ token: await this.createSession() });
     }
 
@@ -227,7 +294,10 @@ export class PadRoom extends YServer<Env> {
       if (pin && !(await this.canEdit(token))) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
-      const body = (await request.json()) as { pin?: string; remove?: boolean };
+      const body = await this.readJson<{ pin?: string; remove?: boolean }>(
+        request,
+      );
+      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
       if (body.remove) {
         await this.ctx.storage.delete("pin");
         await this.ctx.storage.delete("sessions");
@@ -254,6 +324,17 @@ export class PadRoom extends YServer<Env> {
       return Response.json({ token: roToken });
     }
 
+    // ADR-0009: rotating mints a new token; old read-only links stop working
+    // (live read-only sockets stay open until they reconnect).
+    if (op === "ro-token" && request.method === "POST") {
+      if (!(await this.canEdit(token))) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const roToken = crypto.randomUUID();
+      await this.ctx.storage.put("roToken", roToken);
+      return Response.json({ token: roToken });
+    }
+
     if (op === "snapshots" && request.method === "GET") {
       if (pin && !(await this.canEdit(token))) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -274,7 +355,8 @@ export class PadRoom extends YServer<Env> {
       if (!(await this.canEdit(token))) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
-      const body = (await request.json()) as { id?: number };
+      const body = await this.readJson<{ id?: number }>(request);
+      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
       const rows = this.ctx.storage.sql
         .exec("SELECT data FROM snapshots WHERE id = ?", body.id ?? -1)
         .toArray();
@@ -329,6 +411,33 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
 
+// ADR-0009: defense-in-depth headers on every HTML/asset response.
+function csp(hostname: string): string {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    // Explicit wss entry: not every browser maps same-origin ws under 'self'.
+    `connect-src 'self' wss://${hostname}`,
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+function withSecurityHeaders(response: Response, hostname: string): Response {
+  const res = new Response(response.body, response);
+  res.headers.set("x-content-type-options", "nosniff");
+  res.headers.set("referrer-policy", "no-referrer");
+  // Vite dev injects inline scripts (react-refresh); CSP is prod-only.
+  const isDev = hostname === "localhost" || hostname === "127.0.0.1";
+  if (!isDev) res.headers.set("content-security-policy", csp(hostname));
+  return res;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const roomResponse = await routePartykitRequest(request, env as never);
@@ -344,9 +453,9 @@ export default {
       isValidSlug(slug) &&
       CRAWLER_RE.test(request.headers.get("user-agent") ?? "")
     ) {
-      return ogResponse(slug, url.origin);
+      return withSecurityHeaders(ogResponse(slug, url.origin), url.hostname);
     }
 
-    return env.ASSETS.fetch(request);
+    return withSecurityHeaders(await env.ASSETS.fetch(request), url.hostname);
   },
 } satisfies ExportedHandler<Env>;
