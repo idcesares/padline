@@ -11,3 +11,18 @@
 /humans.txt
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+
+/robots.txt
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+/sitemap.xml
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+/llms.txt
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
