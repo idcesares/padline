@@ -534,6 +534,9 @@ export class PadRoom extends YServer<Env> {
 
 // --- Worker: parties routing, API, OG tags for crawlers, asset serving ---
 
+const CANONICAL_HOST = "padline.page";
+const LEGACY_HOSTS = new Set(["www.padline.page", "padline.dcesares.dev"]);
+
 const CRAWLER_RE =
   /facebookexternalhit|twitterbot|slackbot|discordbot|linkedinbot|whatsapp|telegrambot|googlebot|bingbot/i;
 
@@ -598,6 +601,14 @@ function withSecurityHeaders(response: Response, hostname: string): Response {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Canonical host: www and the legacy domain permanently redirect to
+    // padline.page so pad links resolve to a single origin.
+    const requestUrl = new URL(request.url);
+    if (LEGACY_HOSTS.has(requestUrl.hostname)) {
+      requestUrl.hostname = CANONICAL_HOST;
+      return Response.redirect(requestUrl.toString(), 301);
+    }
+
     const roomResponse = await routePartykitRequest(request, env as never);
     if (roomResponse) return roomResponse;
 

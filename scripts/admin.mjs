@@ -6,7 +6,7 @@
 //   ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> unblock
 //   ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge [--block] [--reason "..."]
 //
-// <host> examples: 127.0.0.1:8788, https://padline.dcesares.dev
+// <host> examples: 127.0.0.1:8788, https://padline.page
 //
 // info    — metadata + content preview (works through a PIN)
 // block   — pad refuses all access; visitors see the removed screen
