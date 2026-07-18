@@ -38,6 +38,8 @@ flowchart LR
 - A **pad** is identified by its slug — the URL path. One pad ↔ one Durable Object room holding live connections, the Yjs document, snapshot history, and the PIN/read-only gates.
 - Authorization happens **before any document bytes are sent**: PIN-protected pads refuse the WebSocket until a valid session token is presented; read-only links connect with a capability token the room enforces.
 - Documents persist to SQLite-backed Durable Object storage; snapshots are taken on an idle trigger and capped at 100 per pad.
+- Cloudflare serves content-hashed JS/CSS directly from its static asset edge cache; document routes still run through the Worker for crawler metadata and dynamic security headers.
+- The landing, legal, and editor routes load independently, so opening the homepage does not download the BlockNote collaboration graph.
 
 **Stack**: React 19 · Vite · Tailwind v4 · shadcn/ui · BlockNote · Yjs · y-indexeddb · Hono · Cloudflare Workers · Durable Objects (SQLite) · y-partyserver
 
@@ -50,6 +52,7 @@ git clone https://github.com/idcesares/padline.git
 cd padline
 npm install
 npm run dev      # http://127.0.0.1:8788 — Vite + the Worker running locally
+npm test         # room integration tests inside the Cloudflare Workers runtime
 ```
 
 Open `http://127.0.0.1:8788/my-first-pad` and start typing. Open the same URL in a second tab to see collaboration live.
@@ -106,6 +109,7 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | Vite dev server with the Worker running locally |
+| `npm test` | Cloudflare Workers integration tests (HTTP, WebSocket limits, SQLite-backed room eviction) |
 | `npm run build` | Typecheck + production build |
 | `npm run deploy` | Build + `wrangler deploy` |
 | `node scripts/api-smoke.mjs` | Smoke suite against the local dev server (set `ADMIN_SECRET` to also exercise the takedown lifecycle) |
@@ -121,6 +125,7 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 │   ├── hooks/            #   theme, awareness
 │   └── lib/              #   slug rules, pad HTTP API, identity
 ├── worker/               # Cloudflare Worker: routing, OG tags, PadRoom Durable Object
+├── test/                 # Workers-runtime integration tests for the room interface
 ├── scripts/              # smoke tests (HTTP + WebSocket)
 ├── docs/
 │   ├── adr/              # architecture decision records (the "why")
@@ -128,6 +133,11 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 ├── CONTEXT.md            # domain model & ubiquitous language
 └── wrangler.jsonc        # Cloudflare deployment config
 ```
+
+The test suite uses Cloudflare's Vitest pool, so Durable Objects, SQLite storage,
+and WebSockets run locally in `workerd` instead of browser or Node mocks. See
+[ADR-0011](docs/adr/0011-cloudflare-native-delivery-and-tests.md) for the asset
+routing and verification decision.
 
 ## Contributing
 

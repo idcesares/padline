@@ -1,10 +1,21 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import "./index.css";
-import Landing from "./routes/landing";
-import Pad from "./routes/pad";
-import { Terms, Privacy, ContentPolicy } from "./routes/legal";
+
+const Landing = lazy(() => import("./routes/landing"));
+const Pad = lazy(() => import("./routes/pad"));
+const Terms = lazy(() =>
+  import("./routes/legal").then((module) => ({ default: module.Terms })),
+);
+const Privacy = lazy(() =>
+  import("./routes/legal").then((module) => ({ default: module.Privacy })),
+);
+const ContentPolicy = lazy(() =>
+  import("./routes/legal").then((module) => ({
+    default: module.ContentPolicy,
+  })),
+);
 
 const router = createBrowserRouter([
   { path: "/", element: <Landing /> },
@@ -16,6 +27,17 @@ const router = createBrowserRouter([
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <Suspense
+      fallback={
+        <main
+          className="flex min-h-svh items-center justify-center text-sm text-muted-foreground"
+          aria-busy
+        >
+          Loading Padline…
+        </main>
+      }
+    >
+      <RouterProvider router={router} />
+    </Suspense>
   </StrictMode>,
 );

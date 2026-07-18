@@ -9,7 +9,7 @@ import * as Y from "yjs";
 import { isValidSlug } from "../src/lib/slug";
 
 type Env = {
-  PadRoom: DurableObjectNamespace;
+  PadRoom: DurableObjectNamespace<PadRoom>;
   ASSETS: Fetcher;
   /** Bearer secret for op=admin-*; unset disables the admin surface entirely. */
   ADMIN_SECRET?: string;
@@ -30,6 +30,7 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // ADR-0006: snapshot cadence and retention.
 const SNAPSHOT_MIN_INTERVAL_MS = 60_000;
 const SNAPSHOT_KEEP = 100;
+const DOC_OVER_CAP_KEY = "docOverCap";
 
 type PinRecord = { salt: string; hash: string };
 type PinFails = { count: number; lastAt: number };
@@ -99,7 +100,12 @@ export class PadRoom extends YServer<Env> {
         data BLOB NOT NULL
       )`,
     );
-    const stored = await this.ctx.storage.get<Uint8Array>("doc");
+    const [stored, storedOverCap] = await Promise.all([
+      this.ctx.storage.get<Uint8Array>("doc"),
+      this.ctx.storage.get<boolean>(DOC_OVER_CAP_KEY),
+    ]);
+    this.docOverCap =
+      storedOverCap === true || (stored?.byteLength ?? 0) > MAX_DOC_BYTES;
     if (stored) {
       Y.applyUpdate(this.document, stored);
     }
@@ -110,7 +116,11 @@ export class PadRoom extends YServer<Env> {
     // Empty docs stay unpersisted so typos/crawlers mint nothing (ADR-0004).
     if (update.byteLength <= 2) return;
     this.docOverCap = update.byteLength > MAX_DOC_BYTES;
-    if (this.docOverCap) return;
+    if (this.docOverCap) {
+      await this.ctx.storage.put(DOC_OVER_CAP_KEY, true);
+      return;
+    }
+    await this.ctx.storage.delete(DOC_OVER_CAP_KEY);
     await this.ctx.storage.put("doc", update);
     await this.maybeSnapshot(update);
   }
@@ -208,6 +218,8 @@ export class PadRoom extends YServer<Env> {
       return;
     }
     const connections = [...this.getConnections()];
+    // partyserver has already registered `conn` at this point, so the
+    // connecting socket is included in the count.
     if (connections.length > MAX_CONNECTIONS) {
       conn.close(1013, "pad-full");
       return;
@@ -402,6 +414,10 @@ export class PadRoom extends YServer<Env> {
       }
       const data = new Uint8Array(rows[0].data as ArrayBuffer);
       // ADR-0006: restore is applied as a new edit, never a rollback.
+      // Snapshots only come from accepted, under-cap saves, so restoring one
+      // is also the recovery path for a room frozen by the document cap.
+      this.docOverCap = false;
+      await this.ctx.storage.delete(DOC_OVER_CAP_KEY);
       this.unstable_replaceDocument(data, (key) =>
         key === "document" ? "XmlFragment" : "Map",
       );
@@ -498,6 +514,7 @@ export class PadRoom extends YServer<Env> {
         "roToken",
         "lastSnapshotAt",
         "pinFails",
+        DOC_OVER_CAP_KEY,
       ]);
       // Reset the live doc too, or a warm room would resurrect content on
       // the next connect. (unstable_replaceDocument can't target an empty
@@ -585,6 +602,21 @@ export default {
     if (roomResponse) return roomResponse;
 
     const url = new URL(request.url);
+    // With asset-first routing, a missing hashed chunk falls through to the
+    // Worker. Never turn that miss into the SPA shell: HTML cached as
+    // JavaScript would break clients after a deployment.
+    if (url.pathname.startsWith("/assets/")) {
+      return withSecurityHeaders(
+        new Response("Not found", {
+          status: 404,
+          headers: {
+            "content-type": "text/plain;charset=utf-8",
+            "cache-control": "no-store",
+          },
+        }),
+        url.hostname,
+      );
+    }
     if (url.pathname.startsWith("/api/")) {
       return app.fetch(request, env, ctx);
     }
