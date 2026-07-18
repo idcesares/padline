@@ -4,7 +4,7 @@ Site: https://github.com/idcesares
 
 /* SITE */
 Name: Padline
-URL: https://padline.dcesares.dev
+URL: https://padline.page
 Source: https://github.com/idcesares/padline
 License: MIT
 Stack: React, Vite, Tailwind, BlockNote, Yjs, Hono, Cloudflare Workers, Durable Objects

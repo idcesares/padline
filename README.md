@@ -6,7 +6,7 @@
 [![Deployed on Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-**Live at [padline.dcesares.dev](https://padline.dcesares.dev)** — open any URL and start typing.
+**Live at [padline.page](https://padline.page)** — open any URL and start typing.
 
 Open a URL → it's a pad. Share the link → you're collaborating. A pad is a lightweight Notion-style page with live cursors, presence, offline resilience, and snapshot history. No accounts, no onboarding, no friction.
 
@@ -14,7 +14,7 @@ Open a URL → it's a pad. Share the link → you're collaborating. A pad is a l
 
 - ✏️ **Rich collaborative editing** — Notion-style blocks (BlockNote) over Yjs CRDTs; simultaneous edits merge conflict-free
 - 👥 **Presence** — live cursors, selections, and auto-generated identities ("Mellow Otter") you can rename
-- 🔗 **URL-first** — `padline.dcesares.dev/anything-you-like` *is* the pad; empty pads cost nothing until the first keystroke
+- 🔗 **URL-first** — `padline.page/anything-you-like` *is* the pad; empty pads cost nothing until the first keystroke
 - 🔒 **PIN protection** — optional per-pad PIN gates both viewing and editing, enforced server-side with brute-force backoff
 - 👁️ **Read-only links** — share a view-only capability URL; rotate it anytime to revoke old copies
 - 🕘 **Snapshot history** — automatic snapshots on idle; restoring is itself an undoable edit, never a rollback
@@ -74,7 +74,7 @@ Your instance is live at `https://padline.<your-subdomain>.workers.dev`. To use 
 
 ### Moderation (takedowns)
 
-Operating a public instance means being able to act on content reports — the published [Content Policy](https://padline.dcesares.dev/content-policy) and [Privacy Policy](https://padline.dcesares.dev/privacy) both promise it. There's no dashboard and no pad registry by design (see [ADR-0010](docs/adr/0010-reactive-takedown-admin-ops.md)) — reports arrive by email with a URL, and you act on that one slug.
+Operating a public instance means being able to act on content reports — the published [Content Policy](https://padline.page/content-policy) and [Privacy Policy](https://padline.page/privacy) both promise it. There's no dashboard and no pad registry by design (see [ADR-0010](docs/adr/0010-reactive-takedown-admin-ops.md)) — reports arrive by email with a URL, and you act on that one slug.
 
 **One-time setup**, before you need it:
 
@@ -100,7 +100,7 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 # 3. Reply to the reporter confirming action was taken.
 ```
 
-`unblock` reverses a block if it was applied in error. `<host>` is your domain (e.g. `padline.dcesares.dev`) or `127.0.0.1:8791` locally.
+`unblock` reverses a block if it was applied in error. `<host>` is your domain (e.g. `padline.page`) or `127.0.0.1:8791` locally.
 
 **Note:** the Content Policy and Privacy Policy both route reports to the same inbox as [SECURITY.md](SECURITY.md)'s vulnerability reports — triage by content: a bug/exploit goes through SECURITY.md's process, a bad pad goes through this one.
 
@@ -145,7 +145,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, 
 
 ## Policies
 
-The deployed service publishes its [Terms of Use](https://padline.dcesares.dev/terms), [Privacy Policy](https://padline.dcesares.dev/privacy), and [Content Policy](https://padline.dcesares.dev/content-policy) — plain-language pages served by the app itself (`src/routes/legal.tsx`). If you self-host, adapt them to your own deployment.
+The deployed service publishes its [Terms of Use](https://padline.page/terms), [Privacy Policy](https://padline.page/privacy), and [Content Policy](https://padline.page/content-policy) — plain-language pages served by the app itself (`src/routes/legal.tsx`). If you self-host, adapt them to your own deployment.
 
 ## License & author
 
