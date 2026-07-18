@@ -1,0 +1,29 @@
+# Padline (https://padline.page) — URL-first collaborative pads.
+# Marketing and policy pages are open to crawling and indexing.
+# Individual pads are unlinked and not meant to be discovered by crawling;
+# see /llms.txt for a curated map of what's actually worth reading.
+
+User-agent: *
+Allow: /
+
+# AI assistants and answer engines — explicitly welcome, not just tolerated
+# by omission. See docs/adr/0012-seo-and-geo.md for the reasoning.
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://padline.page/sitemap.xml

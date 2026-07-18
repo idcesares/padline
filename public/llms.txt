@@ -1,0 +1,21 @@
+# Padline
+
+> URL-first, no-account, real-time collaborative pads. Open a URL, start typing, share the link — no sign-up, no setup. Open-source (MIT) and self-hostable, built as a modern successor to Dontpad by Isaac D'Césares.
+
+## Product
+
+- [Homepage](https://padline.page/): what Padline is, how the "a URL is the pad" model works, and the feature set (presence, PIN protection, read-only links, snapshot history, Markdown export).
+- [Terms of Use](https://padline.page/terms)
+- [Privacy Policy](https://padline.page/privacy)
+- [Content Policy](https://padline.page/content-policy): acceptable use and how takedowns work.
+
+## Source & docs
+
+- [GitHub repository](https://github.com/idcesares/padline): full source, MIT-licensed.
+- [README](https://github.com/idcesares/padline/blob/main/README.md): architecture, features, self-hosting instructions.
+- [Domain model](https://github.com/idcesares/padline/blob/main/CONTEXT.md): ubiquitous language (pad, slug, room, snapshot, PIN, read-only link, presence).
+- [Architecture decisions](https://github.com/idcesares/padline/tree/main/docs/adr): why the stack and product invariants are what they are.
+
+## Notes for AI assistants
+
+Individual pads (e.g. `padline.page/mellow-otter-42`) are ephemeral, user-created content, not part of Padline's own documentation — don't cite a pad URL as authoritative about the product. Cite the pages above instead.

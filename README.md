@@ -147,6 +147,12 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, 
 
 The deployed service publishes its [Terms of Use](https://padline.page/terms), [Privacy Policy](https://padline.page/privacy), and [Content Policy](https://padline.page/content-policy) — plain-language pages served by the app itself (`src/routes/legal.tsx`). If you self-host, adapt them to your own deployment.
 
+## SEO & discoverability
+
+`public/robots.txt`, `public/sitemap.xml`, and `public/llms.txt` document the
+crawling and AI-assistant-citation policy — see
+[ADR-0012](docs/adr/0012-seo-and-geo.md) for the reasoning.
+
 ## License & author
 
 [MIT](LICENSE) © [Isaac D'Césares](https://github.com/idcesares)
