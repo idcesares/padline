@@ -28,11 +28,15 @@ The product invariants in `CONTEXT.md` (URL-first, no friction, real-time by def
 2. **Code.** Keep the style of the surrounding code. TypeScript is `strict`; the build fails on unused locals/parameters.
 3. **Verify**:
    ```sh
+   npm test                      # Workers-runtime integration tests
    npm run build                 # typecheck + build must pass
    npm run dev                   # in one terminal
-   node scripts/api-smoke.mjs    # in another — all 22 checks must pass
+   node scripts/api-smoke.mjs    # in another — every check must pass
    ```
-   If you changed the pad-room HTTP/WS surface, **add a smoke check** for the new behavior in `scripts/api-smoke.mjs`.
+   If you changed a room invariant, add a focused test under `test/`; these run
+   against the real Cloudflare Workers runtime, Durable Object storage, and
+   WebSocket implementation. Add or update `scripts/api-smoke.mjs` when the
+   behavior also needs verification against a running or deployed instance.
 4. **Document.** New invariant or non-obvious decision → new ADR (copy the format of an existing one, numbered sequentially). New domain term → add it to `CONTEXT.md`.
 5. **Open a PR** with a clear description of what and why. Commit messages follow the `type: summary` convention (`feat:`, `fix:`, `docs:`, `chore:`).
 
@@ -41,6 +45,8 @@ The product invariants in `CONTEXT.md` (URL-first, no friction, real-time by def
 - **Small and focused** — one concern per PR.
 - **Server-enforced** — anything security-relevant (auth, limits, read-only) must be enforced in the Durable Object, never only in the UI (see ADR-0005).
 - **Free-tier friendly** — Padline runs on Cloudflare's free tier by design; changes shouldn't require paid features.
+- **Cloudflare-native verification** — room behavior belongs in the Workers
+  Vitest pool; use mocks only for code that never touches a runtime interface.
 - **Deferred scope stays deferred** — images/attachments, accounts, comments, and AI features are explicitly phase 2+ (see `CONTEXT.md`). Open an issue to discuss before building these.
 
 ## Reporting bugs & proposing features
