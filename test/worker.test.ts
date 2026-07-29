@@ -150,6 +150,38 @@ describe("Worker asset routing", () => {
   });
 });
 
+describe("Security headers", () => {
+  // padline.test is not localhost, so this exercises the production branch of
+  // withSecurityHeaders — the dev branch drops CSP and HSTS on purpose.
+  it("sends CSP, HSTS and sniffing/referrer headers on a served response", async () => {
+    const response = await SELF.fetch("https://padline.test/robots.txt");
+    await response.body?.cancel();
+
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000; includeSubDomains",
+    );
+
+    const policy = response.headers.get("content-security-policy") ?? "";
+    // form-action has no default-src fallback, so its absence would silently
+    // leave submission targets open.
+    expect(policy).toContain("form-action 'none'");
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect(policy).toContain("object-src 'none'");
+    expect(policy).toContain("connect-src 'self' wss://padline.test");
+  });
+
+  it("omits CSP and HSTS on localhost so dev is not pinned to HTTPS", async () => {
+    const response = await SELF.fetch("http://localhost/robots.txt");
+    await response.body?.cancel();
+
+    expect(response.headers.get("content-security-policy")).toBeNull();
+    expect(response.headers.get("strict-transport-security")).toBeNull();
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+});
+
 describe("PadRoom connection invariants", () => {
   it("accepts exactly 50 room sockets and refuses the next one", async () => {
     const slug = uniqueSlug("connections");
