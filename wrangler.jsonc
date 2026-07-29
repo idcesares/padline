@@ -18,12 +18,25 @@
     }
   ],
   "assets": {
-    "not_found_handling": "single-page-application",
+    // "none", not "single-page-application". This is the setting that keeps a
+    // missing hashed chunk from being answered with index.html at 200 — which
+    // public/_headers would then stamp immutable for a year, leaving clients
+    // caching HTML as JavaScript after a deploy (ADR-0011). Page routes no
+    // longer get an implicit shell either, so worker/index.ts serves it
+    // explicitly. Do not change this back.
+    "not_found_handling": "none",
     "binding": "ASSETS",
     // Worker-first for everything except hashed assets: /api, /parties
     // websockets, crawler OG, admin ops, and the canonical-host redirect all
-    // live in the Worker. Only immutable /assets/* may skip it and be served
-    // straight from the edge.
+    // live in the Worker. /assets/* is excluded so the edge serves it free and
+    // unlimited. Worker-first would make every chunk a billable invocation
+    // (~10x on a cold pad load) and, on the free tier, 429 the entire bundle
+    // once the quota is spent rather than degrading — assets keep serving
+    // through a negative pattern. The accepted cost: a negative pattern never
+    // invokes the Worker, not even on a miss, so a missing chunk gets the
+    // asset router's bare 404 and inherits the immutable /assets/* rule from
+    // public/_headers. A cached empty 404 is survivable; cached HTML was not.
+    // See ADR-0011.
     "run_worker_first": [
       "/*",
       "!/assets/*"

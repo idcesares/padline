@@ -134,6 +134,11 @@ describe("PadRoom eviction invariants", () => {
 });
 
 describe("Worker asset routing", () => {
+  // This pins the Worker's behavior, not the routing that reaches it: SELF
+  // .fetch invokes the entrypoint directly, so it would keep passing even if
+  // wrangler.jsonc stopped sending /assets/* to the Worker — which is exactly
+  // how the SPA-shell regression shipped. scripts/api-smoke.mjs covers the
+  // routing against a real server.
   it("returns a non-cacheable 404 for a missing hashed asset", async () => {
     const response = await SELF.fetch(
       "https://padline.test/assets/not-a-real-build-chunk.js",

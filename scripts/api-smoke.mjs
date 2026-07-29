@@ -164,6 +164,26 @@ res = await fetch(`${HTTP}://${HOST}/reserved-check-${slug}`, {
 });
 check("spa: humans get the app shell", res.ok && (await res.text()).includes("root"));
 
+// ADR-0011: a missing hashed chunk must 404 and must never be the SPA shell.
+// public/_headers stamps /assets/* immutable for a year, so HTML served here
+// would be cached as JavaScript long after the deploy that caused it. The
+// `!/assets/*` exclusion means the asset router answers this without invoking
+// the Worker, so the 404 is a bare one — an empty cached 404 is the accepted
+// cost of keeping asset serving free. What must hold is only that it is not
+// HTML. This has to run against a real server: the Workers-runtime test calls
+// the Worker entrypoint directly and cannot prove what the routing in
+// wrangler.jsonc actually returns to a client.
+res = await fetch(`${HTTP}://${HOST}/assets/not-a-real-build-chunk.js`);
+const missingAsset = await res.text();
+check(
+  "assets: missing hashed chunk 404s instead of serving the SPA shell",
+  res.status === 404 &&
+    !(res.headers.get("content-type") ?? "").includes("text/html") &&
+    !missingAsset.toLowerCase().includes("<!doctype") &&
+    !missingAsset.includes('id="root"'),
+  `status=${res.status} type=${res.headers.get("content-type")} len=${missingAsset.length}`,
+);
+
 // 11. admin surface (ADR-0010): invisible without the secret…
 res = await fetch(`${base}?op=admin-info`);
 data = await res.json();

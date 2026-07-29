@@ -613,20 +613,31 @@ export default {
     if (roomResponse) return roomResponse;
 
     const url = new URL(request.url);
-    // With asset-first routing, a missing hashed chunk falls through to the
-    // Worker. Never turn that miss into the SPA shell: HTML cached as
-    // JavaScript would break clients after a deployment.
+    // Hashed assets: serve the real file, answer a miss with a 404 that is
+    // explicitly not cacheable, and never fall back to the SPA shell — HTML
+    // cached as JavaScript under the immutable /assets/* rule in
+    // public/_headers breaks clients after a deployment (ADR-0011).
+    //
+    // Dormant under the current routing: `!/assets/*` in run_worker_first
+    // means these requests are answered by the asset router and never reach
+    // the Worker. It is written to be correct if that exclusion is ever
+    // dropped — hence serving the asset rather than 404ing unconditionally,
+    // which would blank every chunk the moment the Worker saw one.
     if (url.pathname.startsWith("/assets/")) {
-      return withSecurityHeaders(
-        new Response("Not found", {
-          status: 404,
-          headers: {
-            "content-type": "text/plain;charset=utf-8",
-            "cache-control": "no-store",
-          },
-        }),
-        url.hostname,
-      );
+      const asset = await env.ASSETS.fetch(request);
+      if (asset.status === 404) {
+        return withSecurityHeaders(
+          new Response("Not found", {
+            status: 404,
+            headers: {
+              "content-type": "text/plain;charset=utf-8",
+              "cache-control": "no-store",
+            },
+          }),
+          url.hostname,
+        );
+      }
+      return withSecurityHeaders(asset, url.hostname);
     }
     if (url.pathname.startsWith("/api/")) {
       return app.fetch(request, env, ctx);
@@ -640,6 +651,15 @@ export default {
       return withSecurityHeaders(ogResponse(slug, url.origin), url.hostname);
     }
 
-    return withSecurityHeaders(await env.ASSETS.fetch(request), url.hostname);
+    // not_found_handling is "none", so the asset router no longer invents an
+    // index.html for unmatched paths. Real files (/, /robots.txt, ...) still
+    // serve directly; a pad path is a client-side route and must still boot
+    // the SPA, so the shell is served explicitly here.
+    const asset = await env.ASSETS.fetch(request);
+    if (asset.status !== 404) {
+      return withSecurityHeaders(asset, url.hostname);
+    }
+    const shell = await env.ASSETS.fetch(new URL("/index.html", url.origin));
+    return withSecurityHeaders(shell, url.hostname);
   },
 } satisfies ExportedHandler<Env>;
