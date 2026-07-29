@@ -1,28 +1,39 @@
+# /assets/* is excluded from the Worker by run_worker_first ("!/assets/*"), so
+# withSecurityHeaders never runs on it — every header it needs must be declared
+# here, HSTS included. The other paths below do reach the Worker and get these
+# set there too; keeping them listed means the asset router alone still serves
+# a hardened response.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 /favicon.svg
   Cache-Control: public, max-age=86400
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 /humans.txt
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 /robots.txt
   Cache-Control: public, max-age=3600
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 /sitemap.xml
   Cache-Control: public, max-age=3600
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 /llms.txt
   Cache-Control: public, max-age=3600
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
