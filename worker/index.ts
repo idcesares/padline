@@ -72,11 +72,31 @@ async function hashPin(pin: string, existingSalt?: string): Promise<PinRecord> {
   return { salt: toBase64(salt), hash: toBase64(new Uint8Array(bits)) };
 }
 
+/**
+ * Constant-time compare for values that are already fixed-length — base64
+ * hashes and UUIDs. The length check short-circuits, so this must not be
+ * used directly on a secret whose length is not already public: see
+ * digestEqual.
+ */
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+/**
+ * Constant-time compare for secrets of unknown length. SHA-256 first so both
+ * operands are always 44 base64 chars — otherwise safeEqual's length
+ * short-circuit lets a caller probe the length of ADMIN_SECRET.
+ */
+async function digestEqual(a: string, b: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(a)),
+    crypto.subtle.digest("SHA-256", encoder.encode(b)),
+  ]);
+  return safeEqual(toBase64(new Uint8Array(da)), toBase64(new Uint8Array(db)));
 }
 
 /**
@@ -293,7 +313,7 @@ export class PadRoom extends YServer<Env> {
     // ADR-0010: admin surface. Without a valid secret it is indistinguishable
     // from an unknown op, and it is disabled entirely when no secret is set.
     if (op?.startsWith("admin-")) {
-      if (!this.isAdmin(request)) {
+      if (!(await this.isAdmin(request))) {
         return Response.json({ error: "unknown-op" }, { status: 404 });
       }
       return this.onAdminRequest(op, request);
@@ -429,12 +449,12 @@ export class PadRoom extends YServer<Env> {
 
   // --- admin surface (ADR-0010): reactive takedown, addressed by slug ---
 
-  private isAdmin(request: Request): boolean {
+  private async isAdmin(request: Request): Promise<boolean> {
     const secret = this.env.ADMIN_SECRET;
     if (!secret) return false;
     const auth = request.headers.get("authorization") ?? "";
     const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    return provided.length > 0 && safeEqual(provided, secret);
+    return provided.length > 0 && (await digestEqual(provided, secret));
   }
 
   private closeAllConnections(): void {
@@ -586,16 +606,31 @@ function csp(hostname: string): string {
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",
+    // form-action does NOT fall back to default-src, so without this entry
+    // submission targets stay unrestricted however tight the rest is. Padline
+    // posts everything over fetch/websocket and has no <form> action at all.
+    "form-action 'none'",
   ].join("; ");
 }
+
+// One year. No `preload`: preloading is effectively irreversible once the list
+// ships, whereas a max-age can be wound down. includeSubDomains is safe here
+// because every padline.page host is a Cloudflare HTTPS custom domain — adding
+// an HTTP-only subdomain later would require revisiting this.
+const HSTS = "max-age=31536000; includeSubDomains";
 
 function withSecurityHeaders(response: Response, hostname: string): Response {
   const res = new Response(response.body, response);
   res.headers.set("x-content-type-options", "nosniff");
   res.headers.set("referrer-policy", "no-referrer");
   // Vite dev injects inline scripts (react-refresh); CSP is prod-only.
+  // HSTS is likewise skipped so a year of forced HTTPS is never pinned
+  // against localhost, where browsers would honor it on any local port.
   const isDev = hostname === "localhost" || hostname === "127.0.0.1";
-  if (!isDev) res.headers.set("content-security-policy", csp(hostname));
+  if (!isDev) {
+    res.headers.set("content-security-policy", csp(hostname));
+    res.headers.set("strict-transport-security", HSTS);
+  }
   return res;
 }
 

@@ -18,6 +18,32 @@ All enforcement stays inside the room (per ADR-0008's philosophy), no external s
 - **Headers**: CSP (self-only + inline styles, no framing), `nosniff`, `no-referrer` on all HTML/asset responses. CSP is skipped on localhost (Vite dev injects inline scripts).
 - **Robustness**: malformed JSON bodies return 400; the message size cap counts UTF-8 bytes, not UTF-16 units.
 
+**Amended 2026-07-29.** A follow-up review of the deployed headers closed three
+gaps. The decisions above stand; these are additive.
+
+- **`form-action 'none'` added to the CSP.** `form-action` is not a fetch
+  directive and therefore does *not* fall back to `default-src` — the policy
+  read as locked down while form submission targets were in fact unrestricted.
+  Padline has no `<form>` that posts anywhere (the PIN prompt submits over
+  fetch), so denying outright costs nothing.
+- **HSTS added**: `max-age=31536000; includeSubDomains`, no `preload`.
+  Preloading is effectively irreversible once the list ships, whereas a
+  max-age can be wound down; `includeSubDomains` is safe only because every
+  `padline.page` host is a Cloudflare HTTPS custom domain, which is a
+  constraint on adding subdomains later. Sent on the same responses as CSP and
+  skipped on localhost — a year of forced HTTPS pinned against `localhost`
+  would apply to every local port, not just this project's.
+- **Admin secret comparison is now length-blind.** `safeEqual` short-circuits
+  on unequal length, which leaked the length of `ADMIN_SECRET` to an
+  unauthenticated caller. `digestEqual` SHA-256s both operands first so the
+  compared strings are always 44 base64 characters. `safeEqual` is still used
+  directly where both sides are already fixed-length (PIN hashes, UUID
+  read-only tokens) and is documented as such.
+
+The 404-for-unauthenticated-admin behavior (an admin op is indistinguishable
+from an unknown op) is unchanged and remains the reason no brute-force backoff
+is applied to the admin surface itself.
+
 ## Accepted tradeoffs (explicitly not fixed)
 
 - **Anyone can set a PIN on an unprotected pad**, locking out current users. Inherent to the no-account model — the first person to claim a pad wins. Content survives in snapshots.
