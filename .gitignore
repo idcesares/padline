@@ -8,3 +8,5 @@ dist/
 .DS_Store
 .scratch/
 tsconfig.tsbuildinfo
+test-results/
+playwright-report/

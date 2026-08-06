@@ -10,6 +10,11 @@ export default defineConfig({
     // Windows reserves 5142-5241 (WinNAT), which swallows Vite's default 5173.
     port: 8788,
     host: "127.0.0.1",
+    // Durable Object writes and browser-test artifacts are runtime output, not
+    // source changes. Watching them reloads the SPA while a Room test runs.
+    watch: {
+      ignored: ["**/.wrangler/**", "**/test-results/**", "**/playwright-report/**"],
+    },
   },
   resolve: {
     alias: {

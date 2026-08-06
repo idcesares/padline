@@ -9,11 +9,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import {
-  fetchSnapshots,
-  restoreSnapshot,
-  type SnapshotMeta,
-} from "@/lib/pad-api";
+import type { SnapshotMeta } from "@/lib/pad-api";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -71,11 +67,11 @@ function SnapshotRow({
 }
 
 export function HistorySheet({
-  slug,
-  token,
+  onLoadSnapshots,
+  onRestoreSnapshot,
 }: {
-  slug: string;
-  token?: string;
+  onLoadSnapshots: () => Promise<SnapshotMeta[]>;
+  onRestoreSnapshot: (id: number) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<SnapshotMeta[] | null>(null);
@@ -84,13 +80,13 @@ export function HistorySheet({
   useEffect(() => {
     if (!open) return;
     setError(false);
-    fetchSnapshots(slug, token)
+    onLoadSnapshots()
       .then(setSnapshots)
       .catch(() => setError(true));
-  }, [open, slug, token]);
+  }, [onLoadSnapshots, open]);
 
   const handleRestore = async (id: number) => {
-    await restoreSnapshot(slug, id, token);
+    await onRestoreSnapshot(id);
     setOpen(false);
   };
 
