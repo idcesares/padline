@@ -31,6 +31,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "tsc -p test/tsconfig.json --noEmit && vitest run --max-workers=1 --no-isolate",
+    "test:e2e": "playwright test",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler deploy -c dist/padline/wrangler.json",
     "cf-typegen": "wrangler types"
@@ -57,6 +58,7 @@
     "@cloudflare/vite-plugin": "^1.48.0",
     "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@cloudflare/workers-types": "^4.20260702.1",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.2",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",

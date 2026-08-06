@@ -30,6 +30,7 @@ See [`docs/agents/domain.md`](docs/agents/domain.md).
 
 ```sh
 npm test                      # Workers-runtime integration tests
+npm run test:e2e              # Browser pad-session characterization tests
 npm run build                 # typecheck + build
 npm run dev                   # in one terminal
 node scripts/api-smoke.mjs    # in another — every check must pass

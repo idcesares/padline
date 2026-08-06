@@ -3,8 +3,6 @@ export type SnapshotMeta = { id: number; createdAt: number; size: number };
 
 const base = (slug: string) => `/parties/pad-room/${slug}`;
 
-export const tokenStorageKey = (slug: string) => `padline:token:${slug}`;
-
 function withParams(
   slug: string,
   params: Record<string, string | undefined>,

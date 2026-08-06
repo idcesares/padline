@@ -11,7 +11,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { fetchRoToken, removePin, rotateRoToken, setPin } from "@/lib/pad-api";
 
 function CopyRow({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
@@ -34,29 +33,30 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 }
 
 export function ShareDialog({
-  slug,
-  token,
+  padUrl,
   pinProtected,
-  onPinChange,
+  onSetPin,
+  onRemovePin,
+  onCreateReadOnlyLink,
+  onResetReadOnlyLink,
 }: {
-  slug: string;
-  token?: string;
+  padUrl: string;
   pinProtected: boolean;
-  onPinChange: (protected_: boolean, newToken?: string) => void;
+  onSetPin: (pin: string) => Promise<void>;
+  onRemovePin: () => Promise<void>;
+  onCreateReadOnlyLink: () => Promise<string>;
+  onResetReadOnlyLink: () => Promise<string>;
 }) {
   const [roLink, setRoLink] = useState<string | null>(null);
   const [pinDraft, setPinDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const padUrl = `${window.location.origin}/${slug}`;
-
   const createRoLink = async () => {
     setBusy(true);
     setError(null);
     try {
-      const roToken = await fetchRoToken(slug, token);
-      setRoLink(`${padUrl}?v=${roToken}`);
+      setRoLink(await onCreateReadOnlyLink());
     } catch {
       setError("Couldn't create the read-only link.");
     } finally {
@@ -68,8 +68,7 @@ export function ShareDialog({
     setBusy(true);
     setError(null);
     try {
-      const roToken = await rotateRoToken(slug, token);
-      setRoLink(`${padUrl}?v=${roToken}`);
+      setRoLink(await onResetReadOnlyLink());
     } catch {
       setError("Couldn't reset the read-only link.");
     } finally {
@@ -86,9 +85,8 @@ export function ShareDialog({
     setBusy(true);
     setError(null);
     try {
-      const newToken = await setPin(slug, pinDraft.trim(), token);
+      await onSetPin(pinDraft.trim());
       setPinDraft("");
-      onPinChange(true, newToken);
     } catch {
       setError("Couldn't set the PIN.");
     } finally {
@@ -100,8 +98,7 @@ export function ShareDialog({
     setBusy(true);
     setError(null);
     try {
-      await removePin(slug, token);
-      onPinChange(false, undefined);
+      await onRemovePin();
     } catch {
       setError("Couldn't remove the PIN.");
     } finally {
