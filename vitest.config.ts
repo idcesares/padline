@@ -8,6 +8,9 @@ export default defineConfig({
         configPath: "./wrangler.jsonc",
       },
       miniflare: {
+        bindings: {
+          ADMIN_SECRET: "test-admin-secret",
+        },
         // wrangler.jsonc deliberately omits assets.directory — the Vite plugin
         // injects it at build time — so the real ASSETS binding does not exist
         // under the test pool. Stub it as an always-miss fetcher: the miss

@@ -46,6 +46,104 @@ async function closeWithin(
 }
 
 describe("PadRoom HTTP interface", () => {
+  it("conceals admin capabilities from unauthorized callers", async () => {
+    const slug = uniqueSlug("admin-concealment");
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=admin-info"));
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "unknown-op" });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=admin-info"), {
+      headers: { authorization: "Bearer wrong-secret" },
+    });
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "unknown-op" });
+  });
+
+  it("gives a blocked pad precedence over ordinary capabilities", async () => {
+    const slug = uniqueSlug("admin-block");
+    const adminHeaders = { authorization: "Bearer test-admin-secret" };
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=admin-block"), {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ reason: "characterization" }),
+    });
+    expect(response.status).toBe(200);
+    const blocked = (await response.json()) as {
+      ok: boolean;
+      blocked: { reason?: string };
+    };
+    expect(blocked).toMatchObject({
+      ok: true,
+      blocked: { reason: "characterization" },
+    });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=info"));
+    await expect(response.json()).resolves.toEqual({
+      pinProtected: false,
+      removed: true,
+    });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=set-pin"), {
+      method: "POST",
+      body: JSON.stringify({ pin: "1234" }),
+    });
+    expect(response.status).toBe(410);
+    await expect(response.json()).resolves.toEqual({ error: "pad-removed" });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=admin-unblock"), {
+      method: "POST",
+      headers: adminHeaders,
+    });
+    expect(response.status).toBe(200);
+
+    response = await SELF.fetch(roomUrl(slug, "?op=info"));
+    await expect(response.json()).resolves.toEqual({ pinProtected: false });
+  });
+
+  it("purges a pad and preserves an admin-requested block", async () => {
+    const slug = uniqueSlug("admin-purge");
+    const adminHeaders = { authorization: "Bearer test-admin-secret" };
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=set-pin"), {
+      method: "POST",
+      body: JSON.stringify({ pin: "1234" }),
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    response = await SELF.fetch(roomUrl(slug, "?op=admin-purge"), {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ block: true, reason: "characterization" }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, blocked: true });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=admin-info"), {
+      headers: adminHeaders,
+    });
+    const info = (await response.json()) as {
+      pinProtected: boolean;
+      blocked: { reason?: string } | null;
+      docBytes: number;
+      snapshots: number;
+    };
+    expect(info).toMatchObject({
+      pinProtected: false,
+      blocked: { reason: "characterization" },
+      docBytes: 0,
+      snapshots: 0,
+    });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=info"));
+    await expect(response.json()).resolves.toEqual({
+      pinProtected: false,
+      removed: true,
+    });
+  });
+
   it("gates a protected pad and rotates read-only capabilities", async () => {
     const slug = uniqueSlug("auth");
 
@@ -80,6 +178,45 @@ describe("PadRoom HTTP interface", () => {
     expect(rotated.token).not.toBe(first.token);
   });
 
+  it("verifies and removes a PIN through the Room HTTP interface", async () => {
+    const slug = uniqueSlug("pin-lifecycle");
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=set-pin"), {
+      method: "POST",
+      body: JSON.stringify({ pin: "1234" }),
+    });
+    const initial = (await response.json()) as { token: string };
+    expect(response.status).toBe(200);
+
+    response = await SELF.fetch(roomUrl(slug, "?op=verify-pin"), {
+      method: "POST",
+      body: JSON.stringify({ pin: "9999" }),
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "wrong-pin" });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=verify-pin"), {
+      method: "POST",
+      body: JSON.stringify({ pin: "1234" }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      token: expect.any(String),
+    });
+
+    response = await SELF.fetch(
+      roomUrl(slug, `?op=set-pin&token=${initial.token}`),
+      {
+        method: "POST",
+        body: JSON.stringify({ remove: true }),
+      },
+    );
+    expect(response.status).toBe(200);
+
+    response = await SELF.fetch(roomUrl(slug, "?op=info"));
+    await expect(response.json()).resolves.toEqual({ pinProtected: false });
+  });
+
   it("rejects malformed PIN bodies without crashing the room", async () => {
     const slug = uniqueSlug("json");
     let response = await SELF.fetch(roomUrl(slug, "?op=set-pin"), {
@@ -94,6 +231,21 @@ describe("PadRoom HTTP interface", () => {
     });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "bad-json" });
+  });
+
+  it("lists snapshot history and reports an absent snapshot", async () => {
+    const slug = uniqueSlug("snapshot-http");
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=snapshots"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([]);
+
+    response = await SELF.fetch(roomUrl(slug, "?op=restore"), {
+      method: "POST",
+      body: JSON.stringify({ id: 404 }),
+    });
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "not-found" });
   });
 });
 
