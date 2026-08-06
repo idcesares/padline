@@ -7,6 +7,14 @@ import {
 import { YServer } from "y-partyserver";
 import * as Y from "yjs";
 import { isValidSlug } from "../src/lib/slug";
+import {
+  CLOSE_PAD_REMOVED,
+  DOC_OVER_CAP_KEY,
+  RoomCapabilities,
+  type BlockRecord,
+  type RoomRuntimeState,
+} from "./room-capabilities";
+import { RoomSecurity, safeEqual } from "./room-security";
 
 type Env = {
   PadRoom: DurableObjectNamespace<PadRoom>;
@@ -20,84 +28,12 @@ const MAX_DOC_BYTES = 2 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_CONNECTIONS = 50;
 const MAX_CONNECTIONS_PER_IP = 8;
-const MAX_SESSIONS = 200;
-
-// ADR-0009: PIN brute-force backoff and session lifetime.
-const PIN_FREE_ATTEMPTS = 5;
-const PIN_BACKOFF_MAX_MS = 60_000;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ADR-0006: snapshot cadence and retention.
 const SNAPSHOT_MIN_INTERVAL_MS = 60_000;
 const SNAPSHOT_KEEP = 100;
-const DOC_OVER_CAP_KEY = "docOverCap";
 
-type PinRecord = { salt: string; hash: string };
-type PinFails = { count: number; lastAt: number };
 type ConnState = { readonly: boolean; ip: string } | null;
-type BlockRecord = { at: number; reason?: string };
-
-// ADR-0010: content-policy takedown. Blocked pads refuse connections with
-// this code and the client renders a "removed" screen.
-const CLOSE_PAD_REMOVED = 4404;
-// Cap on the reason string persisted with a block and on the content
-// preview returned by admin-info.
-const ADMIN_REASON_MAX = 500;
-const ADMIN_TEXT_PREVIEW_MAX = 64 * 1024;
-
-function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
-}
-
-function fromBase64(s: string): Uint8Array {
-  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-}
-
-async function hashPin(pin: string, existingSalt?: string): Promise<PinRecord> {
-  const salt = existingSalt
-    ? fromBase64(existingSalt)
-    : crypto.getRandomValues(new Uint8Array(16));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(pin),
-    "PBKDF2",
-    false,
-    ["deriveBits"],
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: salt as BufferSource, iterations: 100_000 },
-    key,
-    256,
-  );
-  return { salt: toBase64(salt), hash: toBase64(new Uint8Array(bits)) };
-}
-
-/**
- * Constant-time compare for values that are already fixed-length — base64
- * hashes and UUIDs. The length check short-circuits, so this must not be
- * used directly on a secret whose length is not already public: see
- * digestEqual.
- */
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-/**
- * Constant-time compare for secrets of unknown length. SHA-256 first so both
- * operands are always 44 base64 chars — otherwise safeEqual's length
- * short-circuit lets a caller probe the length of ADMIN_SECRET.
- */
-async function digestEqual(a: string, b: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const [da, db] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(a)),
-    crypto.subtle.digest("SHA-256", encoder.encode(b)),
-  ]);
-  return safeEqual(toBase64(new Uint8Array(da)), toBase64(new Uint8Array(db)));
-}
 
 /**
  * One pad ↔ one room (ADR-0003). Holds live connections, the Yjs doc,
@@ -109,7 +45,20 @@ export class PadRoom extends YServer<Env> {
     debounceMaxWait: 10000,
   };
 
-  private docOverCap = false;
+  private readonly runtime: RoomRuntimeState = { docOverCap: false };
+  private readonly security = new RoomSecurity(this.ctx.storage, this.env);
+  private readonly capabilities = new RoomCapabilities({
+    storage: this.ctx.storage,
+    security: this.security,
+    roomName: this.name,
+    document: this.document,
+    runtime: this.runtime,
+    connections: () => this.getConnections(),
+    replaceDocument: (data) =>
+      this.unstable_replaceDocument(data, (key) =>
+        key === "document" ? "XmlFragment" : "Map",
+      ),
+  });
 
   async onLoad() {
     this.ctx.storage.sql.exec(
@@ -124,7 +73,7 @@ export class PadRoom extends YServer<Env> {
       this.ctx.storage.get<Uint8Array>("doc"),
       this.ctx.storage.get<boolean>(DOC_OVER_CAP_KEY),
     ]);
-    this.docOverCap =
+    this.runtime.docOverCap =
       storedOverCap === true || (stored?.byteLength ?? 0) > MAX_DOC_BYTES;
     if (stored) {
       Y.applyUpdate(this.document, stored);
@@ -135,8 +84,8 @@ export class PadRoom extends YServer<Env> {
     const update = Y.encodeStateAsUpdate(this.document);
     // Empty docs stay unpersisted so typos/crawlers mint nothing (ADR-0004).
     if (update.byteLength <= 2) return;
-    this.docOverCap = update.byteLength > MAX_DOC_BYTES;
-    if (this.docOverCap) {
+    this.runtime.docOverCap = update.byteLength > MAX_DOC_BYTES;
+    if (this.runtime.docOverCap) {
       await this.ctx.storage.put(DOC_OVER_CAP_KEY, true);
       return;
     }
@@ -160,68 +109,6 @@ export class PadRoom extends YServer<Env> {
         (SELECT id FROM snapshots ORDER BY id DESC LIMIT ${SNAPSHOT_KEEP})`,
     );
     await this.ctx.storage.put("lastSnapshotAt", now);
-  }
-
-  // --- session tokens (granted on PIN verification) ---
-
-  private async createSession(): Promise<string> {
-    const token = crypto.randomUUID();
-    const sessions =
-      (await this.ctx.storage.get<Record<string, number>>("sessions")) ?? {};
-    sessions[token] = Date.now();
-    const entries = Object.entries(sessions);
-    if (entries.length > MAX_SESSIONS) {
-      entries.sort((a, b) => a[1] - b[1]);
-      for (const [old] of entries.slice(0, entries.length - MAX_SESSIONS)) {
-        delete sessions[old];
-      }
-    }
-    await this.ctx.storage.put("sessions", sessions);
-    return token;
-  }
-
-  private async isValidSession(token: string): Promise<boolean> {
-    const sessions =
-      await this.ctx.storage.get<Record<string, number>>("sessions");
-    const grantedAt = sessions?.[token];
-    if (grantedAt === undefined) return false;
-    if (Date.now() - grantedAt > SESSION_TTL_MS) {
-      delete sessions![token];
-      await this.ctx.storage.put("sessions", sessions);
-      return false;
-    }
-    return true;
-  }
-
-  // --- PIN brute-force backoff (ADR-0009) ---
-
-  /** Milliseconds the caller must still wait before the next PIN attempt. */
-  private async pinRetryDelay(): Promise<number> {
-    const fails = await this.ctx.storage.get<PinFails>("pinFails");
-    if (!fails || fails.count < PIN_FREE_ATTEMPTS) return 0;
-    const wait = Math.min(
-      1000 * 2 ** (fails.count - PIN_FREE_ATTEMPTS),
-      PIN_BACKOFF_MAX_MS,
-    );
-    return Math.max(0, fails.lastAt + wait - Date.now());
-  }
-
-  private async recordPinFailure(): Promise<void> {
-    const fails = (await this.ctx.storage.get<PinFails>("pinFails")) ?? {
-      count: 0,
-      lastAt: 0,
-    };
-    await this.ctx.storage.put("pinFails", {
-      count: fails.count + 1,
-      lastAt: Date.now(),
-    });
-  }
-
-  /** Edit access: no PIN set, or a valid session token. */
-  private async canEdit(token: string | null): Promise<boolean> {
-    const pin = await this.ctx.storage.get<PinRecord>("pin");
-    if (!pin) return true;
-    return !!token && (await this.isValidSession(token));
   }
 
   // --- connection gating (ADR-0005: no doc bytes before auth) ---
@@ -265,7 +152,7 @@ export class PadRoom extends YServer<Env> {
       }
       conn.setState({ readonly: true, ip });
     } else {
-      if (!(await this.canEdit(url.searchParams.get("token")))) {
+      if (!(await this.security.canEdit(url.searchParams.get("token")))) {
         conn.close(4401, "pin-required");
         return;
       }
@@ -278,7 +165,7 @@ export class PadRoom extends YServer<Env> {
   isReadOnly(conn: Connection): boolean {
     const state = conn.state as ConnState;
     if (state?.readonly !== false) return true;
-    return this.docOverCap;
+    return this.runtime.docOverCap;
   }
 
   onMessage(conn: Connection, message: string | ArrayBuffer | ArrayBufferView) {
@@ -295,260 +182,8 @@ export class PadRoom extends YServer<Env> {
     super.onMessage(conn, message);
   }
 
-  // --- HTTP surface: /parties/pad-room/:slug?op=... ---
-
-  private async readJson<T>(request: Request): Promise<T | null> {
-    try {
-      return (await request.json()) as T;
-    } catch {
-      return null;
-    }
-  }
-
   async onRequest(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const op = url.searchParams.get("op");
-    const token = url.searchParams.get("token");
-
-    // ADR-0010: admin surface. Without a valid secret it is indistinguishable
-    // from an unknown op, and it is disabled entirely when no secret is set.
-    if (op?.startsWith("admin-")) {
-      if (!(await this.isAdmin(request))) {
-        return Response.json({ error: "unknown-op" }, { status: 404 });
-      }
-      return this.onAdminRequest(op, request);
-    }
-
-    // A blocked pad answers info (so the client can render the removed
-    // screen without connecting) and refuses everything else.
-    const blocked = await this.ctx.storage.get<BlockRecord>("blocked");
-    if (blocked) {
-      if (op === "info" && request.method === "GET") {
-        return Response.json({ pinProtected: false, removed: true });
-      }
-      return Response.json({ error: "pad-removed" }, { status: 410 });
-    }
-
-    const pin = await this.ctx.storage.get<PinRecord>("pin");
-
-    if (op === "info" && request.method === "GET") {
-      return Response.json({ pinProtected: !!pin });
-    }
-
-    if (op === "verify-pin" && request.method === "POST") {
-      if (!pin) return Response.json({ error: "no-pin" }, { status: 400 });
-      const retryIn = await this.pinRetryDelay();
-      if (retryIn > 0) {
-        return Response.json(
-          { error: "too-many-attempts", retryInMs: retryIn },
-          {
-            status: 429,
-            headers: { "retry-after": String(Math.ceil(retryIn / 1000)) },
-          },
-        );
-      }
-      const body = await this.readJson<{ pin?: string }>(request);
-      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
-      const candidate = typeof body.pin === "string" ? body.pin : "";
-      const hashed = await hashPin(candidate, pin.salt);
-      if (!safeEqual(hashed.hash, pin.hash)) {
-        await this.recordPinFailure();
-        return Response.json({ error: "wrong-pin" }, { status: 403 });
-      }
-      await this.ctx.storage.delete("pinFails");
-      return Response.json({ token: await this.createSession() });
-    }
-
-    if (op === "set-pin" && request.method === "POST") {
-      if (pin && !(await this.canEdit(token))) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
-      }
-      const body = await this.readJson<{ pin?: string; remove?: boolean }>(
-        request,
-      );
-      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
-      if (body.remove) {
-        await this.ctx.storage.delete("pin");
-        await this.ctx.storage.delete("sessions");
-        return Response.json({ ok: true });
-      }
-      const newPin = typeof body.pin === "string" ? body.pin.trim() : "";
-      if (newPin.length < 4 || newPin.length > 64) {
-        return Response.json({ error: "invalid-pin" }, { status: 400 });
-      }
-      await this.ctx.storage.put("pin", await hashPin(newPin));
-      await this.ctx.storage.delete("sessions");
-      return Response.json({ token: await this.createSession() });
-    }
-
-    if (op === "ro-token" && request.method === "GET") {
-      if (!(await this.canEdit(token))) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
-      }
-      let roToken = await this.ctx.storage.get<string>("roToken");
-      if (!roToken) {
-        roToken = crypto.randomUUID();
-        await this.ctx.storage.put("roToken", roToken);
-      }
-      return Response.json({ token: roToken });
-    }
-
-    // ADR-0009: rotating mints a new token; old read-only links stop working
-    // (live read-only sockets stay open until they reconnect).
-    if (op === "ro-token" && request.method === "POST") {
-      if (!(await this.canEdit(token))) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
-      }
-      const roToken = crypto.randomUUID();
-      await this.ctx.storage.put("roToken", roToken);
-      return Response.json({ token: roToken });
-    }
-
-    if (op === "snapshots" && request.method === "GET") {
-      if (pin && !(await this.canEdit(token))) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
-      }
-      const rows = this.ctx.storage.sql
-        .exec("SELECT id, created_at, size FROM snapshots ORDER BY id DESC")
-        .toArray();
-      return Response.json(
-        rows.map((r) => ({
-          id: r.id as number,
-          createdAt: r.created_at as number,
-          size: r.size as number,
-        })),
-      );
-    }
-
-    if (op === "restore" && request.method === "POST") {
-      if (!(await this.canEdit(token))) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
-      }
-      const body = await this.readJson<{ id?: number }>(request);
-      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
-      const rows = this.ctx.storage.sql
-        .exec("SELECT data FROM snapshots WHERE id = ?", body.id ?? -1)
-        .toArray();
-      if (rows.length === 0) {
-        return Response.json({ error: "not-found" }, { status: 404 });
-      }
-      const data = new Uint8Array(rows[0].data as ArrayBuffer);
-      // ADR-0006: restore is applied as a new edit, never a rollback.
-      // Snapshots only come from accepted, under-cap saves, so restoring one
-      // is also the recovery path for a room frozen by the document cap.
-      this.docOverCap = false;
-      await this.ctx.storage.delete(DOC_OVER_CAP_KEY);
-      this.unstable_replaceDocument(data, (key) =>
-        key === "document" ? "XmlFragment" : "Map",
-      );
-      return Response.json({ ok: true });
-    }
-
-    return Response.json({ error: "unknown-op" }, { status: 404 });
-  }
-
-  // --- admin surface (ADR-0010): reactive takedown, addressed by slug ---
-
-  private async isAdmin(request: Request): Promise<boolean> {
-    const secret = this.env.ADMIN_SECRET;
-    if (!secret) return false;
-    const auth = request.headers.get("authorization") ?? "";
-    const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    return provided.length > 0 && (await digestEqual(provided, secret));
-  }
-
-  private closeAllConnections(): void {
-    for (const conn of this.getConnections()) {
-      conn.close(CLOSE_PAD_REMOVED, "pad-removed");
-    }
-  }
-
-  private async onAdminRequest(op: string, request: Request): Promise<Response> {
-    if (op === "admin-info" && request.method === "GET") {
-      const [pin, blocked, lastSnapshotAt, stored] = await Promise.all([
-        this.ctx.storage.get<PinRecord>("pin"),
-        this.ctx.storage.get<BlockRecord>("blocked"),
-        this.ctx.storage.get<number>("lastSnapshotAt"),
-        this.ctx.storage.get<Uint8Array>("doc"),
-      ]);
-      const snapshots = this.ctx.storage.sql
-        .exec("SELECT COUNT(*) AS n FROM snapshots")
-        .one().n as number;
-      // Inspect the persisted doc, not the live one: this is what moderation
-      // acts on, and it works even through a PIN (view-gated for visitors,
-      // not for enforcement).
-      let text = "";
-      if (stored) {
-        const probe = new Y.Doc();
-        Y.applyUpdate(probe, stored);
-        text = probe.getXmlFragment("document").toString();
-      }
-      return Response.json({
-        slug: this.name,
-        pinProtected: !!pin,
-        blocked: blocked ?? null,
-        docBytes: stored?.byteLength ?? 0,
-        snapshots,
-        lastSnapshotAt: lastSnapshotAt ?? null,
-        liveConnections: [...this.getConnections()].length,
-        text: text.slice(0, ADMIN_TEXT_PREVIEW_MAX),
-      });
-    }
-
-    if (op === "admin-block" && request.method === "POST") {
-      const body =
-        (await this.readJson<{ reason?: string }>(request)) ?? {};
-      const record: BlockRecord = { at: Date.now() };
-      if (typeof body.reason === "string" && body.reason.trim()) {
-        record.reason = body.reason.trim().slice(0, ADMIN_REASON_MAX);
-      }
-      await this.ctx.storage.put("blocked", record);
-      this.closeAllConnections();
-      return Response.json({ ok: true, blocked: record });
-    }
-
-    if (op === "admin-unblock" && request.method === "POST") {
-      await this.ctx.storage.delete("blocked");
-      return Response.json({ ok: true });
-    }
-
-    if (op === "admin-purge" && request.method === "POST") {
-      const body =
-        (await this.readJson<{ block?: boolean; reason?: string }>(request)) ??
-        {};
-      // Block before wiping so nobody reconnects into the gap; the block
-      // record itself survives the purge.
-      if (body.block) {
-        const record: BlockRecord = { at: Date.now() };
-        if (typeof body.reason === "string" && body.reason.trim()) {
-          record.reason = body.reason.trim().slice(0, ADMIN_REASON_MAX);
-        }
-        await this.ctx.storage.put("blocked", record);
-      }
-      this.closeAllConnections();
-      this.ctx.storage.sql.exec("DELETE FROM snapshots");
-      await this.ctx.storage.delete([
-        "doc",
-        "pin",
-        "sessions",
-        "roToken",
-        "lastSnapshotAt",
-        "pinFails",
-        DOC_OVER_CAP_KEY,
-      ]);
-      // Reset the live doc too, or a warm room would resurrect content on
-      // the next connect. (unstable_replaceDocument can't target an empty
-      // snapshot — its UndoManager needs at least one root type.) Deleting
-      // in a transaction lets Yjs GC drop the content bytes.
-      const frag = this.document.getXmlFragment("document");
-      if (frag.length > 0) {
-        this.document.transact(() => frag.delete(0, frag.length));
-      }
-      this.docOverCap = false;
-      return Response.json({ ok: true, blocked: !!body.block });
-    }
-
-    return Response.json({ error: "unknown-op" }, { status: 404 });
+    return this.capabilities.handle(request);
   }
 }
 
