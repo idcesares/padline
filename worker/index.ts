@@ -5,15 +5,13 @@ import {
   type ConnectionContext,
 } from "partyserver";
 import { YServer } from "y-partyserver";
-import * as Y from "yjs";
 import { isValidSlug } from "../src/lib/slug";
 import {
   CLOSE_PAD_REMOVED,
-  DOC_OVER_CAP_KEY,
   RoomCapabilities,
   type BlockRecord,
-  type RoomRuntimeState,
 } from "./room-capabilities";
+import { RoomPersistence } from "./room-persistence";
 import { RoomSecurity, safeEqual } from "./room-security";
 
 type Env = {
@@ -23,21 +21,18 @@ type Env = {
   ADMIN_SECRET?: string;
 };
 
-// ADR-0008: cheap-to-enforce, catastrophic-to-miss invariants.
-const MAX_DOC_BYTES = 2 * 1024 * 1024;
+// ADR-0008: cheap-to-enforce, catastrophic-to-miss invariants. The document
+// size cap lives with the persisted state it protects, in RoomPersistence.
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_CONNECTIONS = 50;
 const MAX_CONNECTIONS_PER_IP = 8;
 
-// ADR-0006: snapshot cadence and retention.
-const SNAPSHOT_MIN_INTERVAL_MS = 60_000;
-const SNAPSHOT_KEEP = 100;
-
 type ConnState = { readonly: boolean; ip: string } | null;
 
 /**
- * One pad ↔ one room (ADR-0003). Holds live connections, the Yjs doc,
- * snapshot history, and the PIN/read-only gates (ADR-0005/0006/0008).
+ * One pad ↔ one room (ADR-0003). Holds live connections and the PIN/read-only
+ * gates (ADR-0005/0008); durability and snapshot history belong to
+ * RoomPersistence, and the HTTP surface to RoomCapabilities.
  */
 export class PadRoom extends YServer<Env> {
   static callbackOptions = {
@@ -45,70 +40,27 @@ export class PadRoom extends YServer<Env> {
     debounceMaxWait: 10000,
   };
 
-  private readonly runtime: RoomRuntimeState = { docOverCap: false };
   private readonly security = new RoomSecurity(this.ctx.storage, this.env);
+  private readonly persistence = new RoomPersistence({
+    storage: this.ctx.storage,
+    document: this.document,
+    replaceDocument: (data, rootType) =>
+      this.unstable_replaceDocument(data, rootType),
+  });
   private readonly capabilities = new RoomCapabilities({
     storage: this.ctx.storage,
     security: this.security,
+    persistence: this.persistence,
     roomName: this.name,
-    document: this.document,
-    runtime: this.runtime,
     connections: () => this.getConnections(),
-    replaceDocument: (data) =>
-      this.unstable_replaceDocument(data, (key) =>
-        key === "document" ? "XmlFragment" : "Map",
-      ),
   });
 
   async onLoad() {
-    this.ctx.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS snapshots (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at INTEGER NOT NULL,
-        size INTEGER NOT NULL,
-        data BLOB NOT NULL
-      )`,
-    );
-    const [stored, storedOverCap] = await Promise.all([
-      this.ctx.storage.get<Uint8Array>("doc"),
-      this.ctx.storage.get<boolean>(DOC_OVER_CAP_KEY),
-    ]);
-    this.runtime.docOverCap =
-      storedOverCap === true || (stored?.byteLength ?? 0) > MAX_DOC_BYTES;
-    if (stored) {
-      Y.applyUpdate(this.document, stored);
-    }
+    await this.persistence.load();
   }
 
   async onSave() {
-    const update = Y.encodeStateAsUpdate(this.document);
-    // Empty docs stay unpersisted so typos/crawlers mint nothing (ADR-0004).
-    if (update.byteLength <= 2) return;
-    this.runtime.docOverCap = update.byteLength > MAX_DOC_BYTES;
-    if (this.runtime.docOverCap) {
-      await this.ctx.storage.put(DOC_OVER_CAP_KEY, true);
-      return;
-    }
-    await this.ctx.storage.delete(DOC_OVER_CAP_KEY);
-    await this.ctx.storage.put("doc", update);
-    await this.maybeSnapshot(update);
-  }
-
-  private async maybeSnapshot(update: Uint8Array) {
-    const last = (await this.ctx.storage.get<number>("lastSnapshotAt")) ?? 0;
-    const now = Date.now();
-    if (now - last < SNAPSHOT_MIN_INTERVAL_MS) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO snapshots (created_at, size, data) VALUES (?, ?, ?)",
-      now,
-      update.byteLength,
-      update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength),
-    );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM snapshots WHERE id NOT IN
-        (SELECT id FROM snapshots ORDER BY id DESC LIMIT ${SNAPSHOT_KEEP})`,
-    );
-    await this.ctx.storage.put("lastSnapshotAt", now);
+    await this.persistence.save();
   }
 
   // --- connection gating (ADR-0005: no doc bytes before auth) ---
@@ -165,7 +117,7 @@ export class PadRoom extends YServer<Env> {
   isReadOnly(conn: Connection): boolean {
     const state = conn.state as ConnState;
     if (state?.readonly !== false) return true;
-    return this.runtime.docOverCap;
+    return this.persistence.isFrozen();
   }
 
   onMessage(conn: Connection, message: string | ArrayBuffer | ArrayBufferView) {

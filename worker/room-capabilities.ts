@@ -1,5 +1,5 @@
 import type { Connection } from "partyserver";
-import * as Y from "yjs";
+import type { RoomPersistence } from "./room-persistence";
 import {
   hashPin,
   RoomSecurity,
@@ -8,19 +8,15 @@ import {
 } from "./room-security";
 
 export const CLOSE_PAD_REMOVED = 4404;
-export const DOC_OVER_CAP_KEY = "docOverCap";
 
 export type BlockRecord = { at: number; reason?: string };
-export type RoomRuntimeState = { docOverCap: boolean };
 
 type RoomCapabilitiesContext = {
   storage: DurableObjectStorage;
   security: RoomSecurity;
+  persistence: RoomPersistence;
   roomName: string;
-  document: Y.Doc;
-  runtime: RoomRuntimeState;
   connections: () => Iterable<Connection>;
-  replaceDocument: (data: Uint8Array) => void;
 };
 
 type CapabilityRequest = {
@@ -176,16 +172,7 @@ export class RoomCapabilities {
       if (pin && !(await this.context.security.canEdit(token))) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
-      const rows = this.context.storage.sql
-        .exec("SELECT id, created_at, size FROM snapshots ORDER BY id DESC")
-        .toArray();
-      return Response.json(
-        rows.map((row) => ({
-          id: row.id as number,
-          createdAt: row.created_at as number,
-          size: row.size as number,
-        })),
-      );
+      return Response.json(this.context.persistence.listSnapshots());
     }
 
     if (op !== "restore" || request.method !== "POST") return null;
@@ -195,18 +182,10 @@ export class RoomCapabilities {
     }
     const body = await this.readJson<{ id?: number }>(request);
     if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
-    const rows = this.context.storage.sql
-      .exec("SELECT data FROM snapshots WHERE id = ?", body.id ?? -1)
-      .toArray();
-    if (rows.length === 0) {
-      return Response.json({ error: "not-found" }, { status: 404 });
+    const outcome = await this.context.persistence.restoreSnapshot(body.id);
+    if (!outcome.ok) {
+      return Response.json({ error: outcome.reason }, { status: 404 });
     }
-    const data = new Uint8Array(rows[0].data as ArrayBuffer);
-    // ADR-0006: restore is a new edit. Accepted snapshots are also the
-    // recovery path for a Room frozen by the document cap.
-    this.context.runtime.docOverCap = false;
-    await this.context.storage.delete(DOC_OVER_CAP_KEY);
-    this.context.replaceDocument(data);
     return Response.json({ ok: true });
   }
 
@@ -215,32 +194,17 @@ export class RoomCapabilities {
     request: Request,
   ): Promise<Response> {
     if (op === "admin-info" && request.method === "GET") {
-      const [pin, blocked, lastSnapshotAt, stored] = await Promise.all([
+      const [pin, blocked, persisted] = await Promise.all([
         this.context.storage.get<PinRecord>("pin"),
         this.context.storage.get<BlockRecord>("blocked"),
-        this.context.storage.get<number>("lastSnapshotAt"),
-        this.context.storage.get<Uint8Array>("doc"),
+        this.context.persistence.inspect(ADMIN_TEXT_PREVIEW_MAX),
       ]);
-      const snapshots = this.context.storage.sql
-        .exec("SELECT COUNT(*) AS n FROM snapshots")
-        .one().n as number;
-      // Enforcement inspects persisted content, not the live document, and
-      // therefore remains available through a visitor-facing PIN.
-      let text = "";
-      if (stored) {
-        const probe = new Y.Doc();
-        Y.applyUpdate(probe, stored);
-        text = probe.getXmlFragment("document").toString();
-      }
       return Response.json({
         slug: this.context.roomName,
         pinProtected: !!pin,
         blocked: blocked ?? null,
-        docBytes: stored?.byteLength ?? 0,
-        snapshots,
-        lastSnapshotAt: lastSnapshotAt ?? null,
         liveConnections: [...this.context.connections()].length,
-        text: text.slice(0, ADMIN_TEXT_PREVIEW_MAX),
+        ...persisted,
       });
     }
 
@@ -270,25 +234,8 @@ export class RoomCapabilities {
       await this.context.storage.put("blocked", this.blockRecord(body.reason));
     }
     this.closeAllConnections();
-    this.context.storage.sql.exec("DELETE FROM snapshots");
-    await this.context.storage.delete([
-      "doc",
-      "pin",
-      "sessions",
-      "roToken",
-      "lastSnapshotAt",
-      "pinFails",
-      DOC_OVER_CAP_KEY,
-    ]);
-    // Reset the live document too, or a warm Room would resurrect content on
-    // the next connect. Removing fragment content lets Yjs GC drop the bytes.
-    const fragment = this.context.document.getXmlFragment("document");
-    if (fragment.length > 0) {
-      this.context.document.transact(() =>
-        fragment.delete(0, fragment.length),
-      );
-    }
-    this.context.runtime.docOverCap = false;
+    await this.context.persistence.purge();
+    await this.context.security.clearSecrets();
     return Response.json({ ok: true, blocked: !!body.block });
   }
 

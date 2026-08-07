@@ -97,6 +97,16 @@ export class RoomSecurity {
     return token;
   }
 
+  /**
+   * ADR-0010: a purge wipes every access secret the room holds. `roToken` is
+   * minted by the read-only-link capability rather than here, but it is a
+   * capability secret and a purge that left it behind would keep old
+   * read-only links alive against the emptied pad.
+   */
+  async clearSecrets(): Promise<void> {
+    await this.storage.delete(["pin", "sessions", "roToken", "pinFails"]);
+  }
+
   async canEdit(token: string | null): Promise<boolean> {
     const pin = await this.storage.get<PinRecord>("pin");
     if (!pin) return true;
