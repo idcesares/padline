@@ -51,8 +51,10 @@ See [`CONTEXT.md`](CONTEXT.md) for the domain model and ubiquitous language, and
 git clone https://github.com/idcesares/padline.git
 cd padline
 npm install
-npm run dev      # http://127.0.0.1:8788 — Vite + the Worker running locally
-npm test         # room integration tests inside the Cloudflare Workers runtime
+npx playwright install chromium   # for the browser tests
+npm run dev        # http://127.0.0.1:8788 — Vite + the Worker running locally
+npm test           # room integration tests inside the Cloudflare Workers runtime
+npm run test:e2e   # pad-session tests in a real browser
 ```
 
 Open `http://127.0.0.1:8788/my-first-pad` and start typing. Open the same URL in a second tab to see collaboration live.
@@ -110,6 +112,7 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 | --- | --- |
 | `npm run dev` | Vite dev server with the Worker running locally |
 | `npm test` | Cloudflare Workers integration tests (HTTP, WebSocket limits, SQLite-backed room eviction) |
+| `npm run test:e2e` | Playwright pad-session tests in real Chromium against the local Worker |
 | `npm run build` | Typecheck + production build |
 | `npm run deploy` | Build + `wrangler deploy` |
 | `node scripts/api-smoke.mjs` | Smoke suite against the local dev server (set `ADMIN_SECRET` to also exercise the takedown lifecycle) |
@@ -126,6 +129,7 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 │   └── lib/              #   slug rules, pad HTTP API, identity
 ├── worker/               # Cloudflare Worker: routing, OG tags, PadRoom Durable Object
 ├── test/                 # Workers-runtime integration tests for the room interface
+├── e2e/                  # Playwright pad-session tests through the public pad URL
 ├── scripts/              # smoke tests (HTTP + WebSocket)
 ├── docs/
 │   ├── adr/              # architecture decision records (the "why")
@@ -137,7 +141,10 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 The test suite uses Cloudflare's Vitest pool, so Durable Objects, SQLite storage,
 and WebSockets run locally in `workerd` instead of browser or Node mocks. See
 [ADR-0011](docs/adr/0011-cloudflare-native-delivery-and-tests.md) for the asset
-routing and verification decision.
+routing and verification decision. Browser-side pad-session behavior runs in
+real Chromium through Playwright against that same local Worker, rather than in
+a DOM simulator — see
+[ADR-0013](docs/adr/0013-route-owned-pad-session.md).
 
 ## Contributing
 
