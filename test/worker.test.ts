@@ -14,6 +14,76 @@ const roomUrl = (slug: string, query = "") =>
 const uniqueSlug = (prefix: string) =>
   `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 
+const ADMIN_HEADERS = { authorization: "Bearer test-admin-secret" };
+
+type AdminInfo = {
+  docBytes: number;
+  snapshots: number;
+  lastSnapshotAt: number | null;
+  text: string;
+};
+
+type SnapshotMeta = { id: number; createdAt: number; size: number };
+
+/** Inspection reads persisted content, so it is the external view of storage. */
+async function adminInfo(slug: string): Promise<AdminInfo> {
+  const response = await SELF.fetch(roomUrl(slug, "?op=admin-info"), {
+    headers: ADMIN_HEADERS,
+  });
+  expect(response.status).toBe(200);
+  return (await response.json()) as AdminInfo;
+}
+
+async function snapshotList(slug: string): Promise<SnapshotMeta[]> {
+  const response = await SELF.fetch(roomUrl(slug, "?op=snapshots"));
+  expect(response.status).toBe(200);
+  return (await response.json()) as SnapshotMeta[];
+}
+
+/** Matches what the editor writes: paragraphs in the "document" XmlFragment. */
+function appendParagraph(doc: Y.Doc, text: string): void {
+  const fragment = doc.getXmlFragment("document");
+  const paragraph = new Y.XmlElement("p");
+  paragraph.insert(0, [new Y.XmlText(text)]);
+  fragment.insert(fragment.length, [paragraph]);
+}
+
+const OVERSIZED_TEXT = "x".repeat(2 * 1024 * 1024);
+
+/** Forces onLoad to run before runInDurableObject inspects the instance. */
+async function warmRoom(slug: string) {
+  const stub = env.PadRoom.getByName(slug);
+  const response = await stub.fetch(roomUrl(slug, "?op=info"));
+  await response.body?.cancel();
+  return stub;
+}
+
+type RoomStub = Awaited<ReturnType<typeof warmRoom>>;
+
+/**
+ * The save hook cannot be reached over HTTP and a real Yjs client cannot push
+ * a document past the 256KB message cap, so persistence is driven from inside
+ * the Durable Object. Every assertion still runs through the Room interface.
+ */
+async function saveDocument(
+  stub: RoomStub,
+  edit?: (doc: Y.Doc) => void,
+): Promise<void> {
+  await runInDurableObject<PadRoom, void>(stub, async (instance) => {
+    edit?.(instance.document);
+    await instance.onSave();
+  });
+}
+
+async function isFrozen(stub: RoomStub): Promise<boolean> {
+  return runInDurableObject<PadRoom, boolean>(stub, (instance) => {
+    const connection = {
+      state: { readonly: false, ip: "" },
+    } as unknown as Parameters<PadRoom["isReadOnly"]>[0];
+    return instance.isReadOnly(connection);
+  });
+}
+
 async function openRoomSocket(slug: string): Promise<WebSocket> {
   const response = await SELF.fetch(
     new Request(roomUrl(slug), {
@@ -252,36 +322,187 @@ describe("PadRoom HTTP interface", () => {
 describe("PadRoom eviction invariants", () => {
   it("preserves an over-cap freeze across eviction", async () => {
     const slug = uniqueSlug("eviction");
-    const stub = env.PadRoom.getByName(slug);
+    const stub = await warmRoom(slug);
 
-    let response = await stub.fetch(roomUrl(slug, "?op=info"));
-    await response.body?.cancel();
-
+    // The fixture has to genuinely exceed the cap for the freeze to mean
+    // anything, so assert that before relying on it.
     const oversized = new Y.Doc();
-    oversized.getText("document").insert(0, "x".repeat(2 * 1024 * 1024));
-    const update = Y.encodeStateAsUpdate(oversized);
-    expect(update.byteLength).toBeGreaterThan(2 * 1024 * 1024);
+    appendParagraph(oversized, OVERSIZED_TEXT);
+    expect(Y.encodeStateAsUpdate(oversized).byteLength).toBeGreaterThan(
+      2 * 1024 * 1024,
+    );
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, OVERSIZED_TEXT));
+    // The freeze is asserted through the read-only decision rather than the
+    // storage key, so it keeps holding once that key becomes private.
+    expect(await isFrozen(stub)).toBe(true);
+
+    await evictDurableObject(stub);
+    await warmRoom(slug);
+
+    expect(await isFrozen(stub)).toBe(true);
+  });
+
+  it("rehydrates a stored pad after eviction", async () => {
+    const slug = uniqueSlug("rehydrate");
+    const stub = await warmRoom(slug);
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, "first paragraph"));
+    expect((await adminInfo(slug)).text).toContain("first paragraph");
+
+    await evictDurableObject(stub);
+    await warmRoom(slug);
+
+    // Appending after eviction proves the reloaded room restored the stored
+    // document: without it the earlier paragraph would be gone from storage.
+    await saveDocument(stub, (doc) => appendParagraph(doc, "second paragraph"));
+
+    const info = await adminInfo(slug);
+    expect(info.text).toContain("first paragraph");
+    expect(info.text).toContain("second paragraph");
+  });
+});
+
+describe("PadRoom persisted pad state", () => {
+  it("leaves an empty pad unpersisted", async () => {
+    const slug = uniqueSlug("empty-pad");
+    const stub = await warmRoom(slug);
+
+    // ADR-0004: a room saved without a keystroke must mint nothing.
+    await saveDocument(stub);
+
+    const info = await adminInfo(slug);
+    expect(info.docBytes).toBe(0);
+    expect(info.snapshots).toBe(0);
+    expect(info.lastSnapshotAt).toBeNull();
+    await expect(snapshotList(slug)).resolves.toEqual([]);
+  });
+
+  it("takes one snapshot per idle interval, newest first", async () => {
+    const slug = uniqueSlug("snapshot-cadence");
+    const stub = await warmRoom(slug);
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, "first edit"));
+    expect(await snapshotList(slug)).toHaveLength(1);
+
+    // A second save inside the interval persists the document but must not
+    // add history (ADR-0006).
+    await saveDocument(stub, (doc) => appendParagraph(doc, "second edit"));
+    expect(await snapshotList(slug)).toHaveLength(1);
+
+    // Cadence is 60s of real time, which this runtime will not advance, so the
+    // interval is moved rather than waited out.
+    await runInDurableObject<PadRoom, void>(stub, async (_instance, state) => {
+      await state.storage.put("lastSnapshotAt", Date.now() - 120_000);
+    });
+    await saveDocument(stub, (doc) => appendParagraph(doc, "third edit"));
+
+    const snapshots = await snapshotList(slug);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0].id).toBeGreaterThan(snapshots[1].id);
+    expect(snapshots[0].size).toBeGreaterThan(snapshots[1].size);
+    expect(snapshots[0].createdAt).toEqual(expect.any(Number));
+
+    const info = await adminInfo(slug);
+    expect(info.snapshots).toBe(2);
+    expect(info.text).toContain("third edit");
+  });
+
+  it("keeps the newest 100 snapshots and prunes the oldest", async () => {
+    const slug = uniqueSlug("snapshot-retention");
+    const stub = await warmRoom(slug);
 
     await runInDurableObject<PadRoom, void>(stub, async (instance, state) => {
-      Y.applyUpdate(instance.document, update);
-      await instance.onSave();
-      await expect(state.storage.get("docOverCap")).resolves.toBe(true);
+      for (let edit = 0; edit < 105; edit++) {
+        appendParagraph(instance.document, `edit ${edit}`);
+        // Clearing the cadence marker forces every save to snapshot.
+        await state.storage.put("lastSnapshotAt", 0);
+        await instance.onSave();
+      }
     });
-    await evictDurableObject(stub);
 
-    response = await stub.fetch(roomUrl(slug, "?op=info"));
-    await response.body?.cancel();
+    const snapshots = await snapshotList(slug);
+    expect(snapshots).toHaveLength(100);
+    // Ordered newest first and contiguous, so exactly the oldest were pruned.
+    expect(snapshots[0].id - snapshots[99].id).toBe(99);
+    expect(snapshots[0].size).toBeGreaterThan(snapshots[99].size);
+    expect((await adminInfo(slug)).snapshots).toBe(100);
+  });
 
-    const readOnly = await runInDurableObject<PadRoom, boolean>(
-      stub,
-      (instance) => {
-        const connection = {
-          state: { readonly: false, ip: "" },
-        } as unknown as Parameters<PadRoom["isReadOnly"]>[0];
-        return instance.isReadOnly(connection);
-      },
-    );
-    expect(readOnly).toBe(true);
+  it("keeps the last accepted document when a save exceeds the cap", async () => {
+    const slug = uniqueSlug("over-cap-save");
+    const stub = await warmRoom(slug);
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, "accepted content"));
+    const accepted = await adminInfo(slug);
+    expect(accepted.docBytes).toBeGreaterThan(0);
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, OVERSIZED_TEXT));
+    expect(await isFrozen(stub)).toBe(true);
+
+    // The over-cap update is refused outright: the last accepted document is
+    // still what a reader or the operator gets.
+    const frozen = await adminInfo(slug);
+    expect(frozen.docBytes).toBe(accepted.docBytes);
+    expect(frozen.text).toContain("accepted content");
+    expect(frozen.text).not.toContain("x".repeat(1000));
+  });
+
+  it("recovers a frozen room by restoring a snapshot", async () => {
+    const slug = uniqueSlug("frozen-restore");
+    const stub = await warmRoom(slug);
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, "restorable content"));
+    const [snapshot] = await snapshotList(slug);
+    expect(snapshot).toBeDefined();
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, OVERSIZED_TEXT));
+    expect(await isFrozen(stub)).toBe(true);
+
+    const response = await SELF.fetch(roomUrl(slug, "?op=restore"), {
+      method: "POST",
+      body: JSON.stringify({ id: snapshot.id }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+
+    // ADR-0006: an accepted restore is a new edit, and it is the recovery path
+    // out of the document cap freeze.
+    expect(await isFrozen(stub)).toBe(false);
+
+    await saveDocument(stub);
+    const restored = await adminInfo(slug);
+    expect(restored.text).toContain("restorable content");
+    expect(restored.text).not.toContain("x".repeat(1000));
+    expect(restored.docBytes).toBeLessThan(2 * 1024 * 1024);
+  });
+
+  it("stops a warm room from re-persisting purged content", async () => {
+    const slug = uniqueSlug("warm-purge");
+    const stub = await warmRoom(slug);
+
+    await saveDocument(stub, (doc) => appendParagraph(doc, "reported content"));
+    expect((await adminInfo(slug)).text).toContain("reported content");
+
+    const response = await SELF.fetch(roomUrl(slug, "?op=admin-purge"), {
+      method: "POST",
+      headers: ADMIN_HEADERS,
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, blocked: false });
+
+    const purged = await adminInfo(slug);
+    expect(purged.docBytes).toBe(0);
+    expect(purged.snapshots).toBe(0);
+    expect(purged.lastSnapshotAt).toBeNull();
+    await expect(snapshotList(slug)).resolves.toEqual([]);
+
+    // The room is still warm, so its next debounced save would write the live
+    // document straight back if purge had not reset it. Yjs keeps deletion
+    // metadata, so the invariant is that no content returns — not zero bytes.
+    await saveDocument(stub);
+    expect((await adminInfo(slug)).text).not.toContain("reported content");
   });
 });
 
