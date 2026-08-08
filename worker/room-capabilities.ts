@@ -1,11 +1,6 @@
 import type { Connection } from "partyserver";
 import type { RoomPersistence } from "./room-persistence";
-import {
-  hashPin,
-  RoomSecurity,
-  safeEqual,
-  type PinRecord,
-} from "./room-security";
+import type { RoomSecurity } from "./room-security";
 
 export const CLOSE_PAD_REMOVED = 4404;
 
@@ -23,7 +18,6 @@ type CapabilityRequest = {
   request: Request;
   op: string | null;
   token: string | null;
-  pin: PinRecord | undefined;
 };
 
 const ADMIN_REASON_MAX = 500;
@@ -33,6 +27,11 @@ const ADMIN_TEXT_PREVIEW_MAX = 64 * 1024;
  * The Room's HTTP capability implementation. Its single interface preserves
  * the external Room seam while authorization, storage changes, and response
  * mapping stay local to each capability path.
+ *
+ * Access credentials are RoomSecurity's (ADR-0016): this module decides
+ * whether a caller is authorized, coerces request field shapes, and maps the
+ * outcomes it gets back onto status codes. Keeping that mapping here means a
+ * renamed domain reason cannot silently change the wire API.
  */
 export class RoomCapabilities {
   constructor(private readonly context: RoomCapabilitiesContext) {}
@@ -63,7 +62,6 @@ export class RoomCapabilities {
       request,
       op,
       token: url.searchParams.get("token"),
-      pin: await this.context.storage.get<PinRecord>("pin"),
     };
 
     return (
@@ -78,41 +76,23 @@ export class RoomCapabilities {
     request,
     op,
     token,
-    pin,
   }: CapabilityRequest): Promise<Response | null> {
     if (op === "info" && request.method === "GET") {
-      return Response.json({ pinProtected: !!pin });
+      return Response.json({
+        pinProtected: await this.context.security.isPinProtected(),
+      });
     }
 
     if (op === "verify-pin" && request.method === "POST") {
-      if (!pin) return Response.json({ error: "no-pin" }, { status: 400 });
-      const retryIn = await this.context.security.pinRetryDelay();
-      if (retryIn > 0) {
-        return Response.json(
-          { error: "too-many-attempts", retryInMs: retryIn },
-          {
-            status: 429,
-            headers: { "retry-after": String(Math.ceil(retryIn / 1000)) },
-          },
-        );
-      }
-      const body = await this.readJson<{ pin?: string }>(request);
-      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
-      const candidate = typeof body.pin === "string" ? body.pin : "";
-      const hashed = await hashPin(candidate, pin.salt);
-      if (!safeEqual(hashed.hash, pin.hash)) {
-        await this.context.security.recordPinFailure();
-        return Response.json({ error: "wrong-pin" }, { status: 403 });
-      }
-      await this.context.storage.delete("pinFails");
-      return Response.json({
-        token: await this.context.security.createSession(),
-      });
+      return this.verifyPinResponse(request);
     }
 
     if (op !== "set-pin" || request.method !== "POST") return null;
 
-    if (pin && !(await this.context.security.canEdit(token))) {
+    // canEdit is already true on an unprotected pad, so this is the whole
+    // gate: an unclaimed pad accepts its first PIN unauthenticated, which is
+    // the accepted tradeoff of the no-account model (ADR-0009).
+    if (!(await this.context.security.canEdit(token))) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
     const body = await this.readJson<{ pin?: string; remove?: boolean }>(
@@ -120,19 +100,49 @@ export class RoomCapabilities {
     );
     if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
     if (body.remove) {
-      await this.context.storage.delete("pin");
-      await this.context.storage.delete("sessions");
+      await this.context.security.removePin();
       return Response.json({ ok: true });
     }
-    const newPin = typeof body.pin === "string" ? body.pin.trim() : "";
-    if (newPin.length < 4 || newPin.length > 64) {
+    const outcome = await this.context.security.setPin(
+      typeof body.pin === "string" ? body.pin : "",
+    );
+    if (!outcome.ok) {
       return Response.json({ error: "invalid-pin" }, { status: 400 });
     }
-    await this.context.storage.put("pin", await hashPin(newPin));
-    await this.context.storage.delete("sessions");
-    return Response.json({
-      token: await this.context.security.createSession(),
+    return Response.json({ token: outcome.token });
+  }
+
+  /**
+   * The body is read through a callback so the order of refusals is the one
+   * the caller sees today: an unprotected pad and a throttled one are both
+   * answered without the request body being touched.
+   */
+  private async verifyPinResponse(request: Request): Promise<Response> {
+    const outcome = await this.context.security.verifyPin(async () => {
+      const body = await this.readJson<{ pin?: string }>(request);
+      if (!body) return null;
+      return typeof body.pin === "string" ? body.pin : "";
     });
+    if (outcome.ok) return Response.json({ token: outcome.token });
+
+    switch (outcome.reason) {
+      case "no-pin":
+        return Response.json({ error: "no-pin" }, { status: 400 });
+      case "throttled":
+        return Response.json(
+          { error: "too-many-attempts", retryInMs: outcome.retryInMs },
+          {
+            status: 429,
+            headers: {
+              "retry-after": String(Math.ceil(outcome.retryInMs / 1000)),
+            },
+          },
+        );
+      case "unreadable":
+        return Response.json({ error: "bad-json" }, { status: 400 });
+      case "wrong-pin":
+        return Response.json({ error: "wrong-pin" }, { status: 403 });
+    }
   }
 
   private async handleReadOnlyLink({
@@ -146,30 +156,21 @@ export class RoomCapabilities {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
-    if (request.method === "GET") {
-      let roToken = await this.context.storage.get<string>("roToken");
-      if (!roToken) {
-        roToken = crypto.randomUUID();
-        await this.context.storage.put("roToken", roToken);
-      }
-      return Response.json({ token: roToken });
-    }
-
-    // ADR-0009: rotating mints a new token; old read-only links stop working
-    // when they reconnect. Existing read-only sockets stay open.
-    const roToken = crypto.randomUUID();
-    await this.context.storage.put("roToken", roToken);
-    return Response.json({ token: roToken });
+    return Response.json({
+      token:
+        request.method === "GET"
+          ? await this.context.security.readOnlyToken()
+          : await this.context.security.rotateReadOnlyToken(),
+    });
   }
 
   private async handleSnapshotHistory({
     request,
     op,
     token,
-    pin,
   }: CapabilityRequest): Promise<Response | null> {
     if (op === "snapshots" && request.method === "GET") {
-      if (pin && !(await this.context.security.canEdit(token))) {
+      if (!(await this.context.security.canEdit(token))) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
       return Response.json(this.context.persistence.listSnapshots());
@@ -194,14 +195,14 @@ export class RoomCapabilities {
     request: Request,
   ): Promise<Response> {
     if (op === "admin-info" && request.method === "GET") {
-      const [pin, blocked, persisted] = await Promise.all([
-        this.context.storage.get<PinRecord>("pin"),
+      const [pinProtected, blocked, persisted] = await Promise.all([
+        this.context.security.isPinProtected(),
         this.context.storage.get<BlockRecord>("blocked"),
         this.context.persistence.inspect(ADMIN_TEXT_PREVIEW_MAX),
       ]);
       return Response.json({
         slug: this.context.roomName,
-        pinProtected: !!pin,
+        pinProtected,
         blocked: blocked ?? null,
         liveConnections: [...this.context.connections()].length,
         ...persisted,
