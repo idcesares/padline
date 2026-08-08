@@ -23,6 +23,17 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  /* The one accent in an otherwise achromatic palette: 6.06:1 on --background. */
+  --link: oklch(0.5 0.19 255);
+  --selection: oklch(0.5 0.19 255 / 18%);
+  /*
+   * Connection state. Semantic, so deliberately independent of --link: these
+   * report a condition rather than invite a click. Tuned per theme and verified
+   * against WCAG 1.4.11 (3:1 for non-text UI) on --background — 4.56, 3.30, 5.39.
+   */
+  --status-ok: oklch(0.55 0.13 155);
+  --status-warn: oklch(0.65 0.13 75);
+  --status-error: oklch(0.55 0.2 25);
 }
 
 .dark {
@@ -44,6 +55,13 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  /* 9.9:1 on --background; the light-mode blue drops to 2.11:1 here. */
+  --link: oklch(0.78 0.13 245);
+  --selection: oklch(0.78 0.13 245 / 28%);
+  /* Same hues lifted for the dark ground — 8.60, 10.41, 6.82. */
+  --status-ok: oklch(0.72 0.17 155);
+  --status-warn: oklch(0.8 0.16 80);
+  --status-error: oklch(0.7 0.19 22);
 }
 
 @theme inline {
@@ -69,6 +87,10 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-link: var(--link);
+  --color-status-ok: var(--status-ok);
+  --color-status-warn: var(--status-warn);
+  --color-status-error: var(--status-error);
 }
 
 @layer base {
@@ -103,4 +125,39 @@
 .bn-container .bn-editor {
   background: transparent;
   padding-inline: 0;
+}
+
+/*
+ * @blocknote/shadcn ships `.bn-shadcn .bn-editor a { color: revert }`, which
+ * rolls links back to the user-agent stylesheet — literally #0000EE, measuring
+ * 2.11:1 on the dark background. Bring them back into the token system.
+ *
+ * The `[href]` qualifier is load-bearing: BlockNote's rule has identical
+ * specificity and its stylesheet ships in the pad route chunk, so it lands
+ * after this file and would otherwise win on source order.
+ */
+.bn-shadcn .bn-editor a[href] {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in oklab, var(--link) 45%, transparent);
+  transition:
+    color 150ms ease,
+    text-decoration-color 150ms ease;
+}
+
+.bn-shadcn .bn-editor a[href]:hover {
+  text-decoration-color: var(--link);
+}
+
+/* The editor never styled selection, so it fell back to the browser default. */
+::selection {
+  background: var(--selection);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bn-shadcn .bn-editor a[href] {
+    transition: none;
+  }
 }

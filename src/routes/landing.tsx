@@ -4,6 +4,7 @@ import { ArrowRight, PenLine } from "lucide-react";
 import { randomSlug, normalizeSlug, isValidSlug } from "@/lib/slug";
 import { useTheme } from "@/hooks/use-theme";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Button } from "@/components/ui/button";
 
 export default function Landing() {
   const navigate = useNavigate();
@@ -35,17 +36,17 @@ export default function Landing() {
       </div>
 
       <div className="flex w-full max-w-sm animate-in flex-col gap-3 fade-in slide-in-from-bottom-3 duration-500 delay-150 fill-mode-both">
-        <button
-          type="button"
+        <Button
+          size="lg"
           onClick={() => openPad(randomSlug())}
-          className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-6 font-medium text-primary-foreground shadow-sm transition-all hover:bg-primary/90 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          className="group h-11 rounded-lg px-6 text-base shadow-sm active:scale-[0.98]"
         >
           New pad
           <ArrowRight
             className="size-4 transition-transform group-hover:translate-x-0.5"
             aria-hidden
           />
-        </button>
+        </Button>
 
         <form onSubmit={openCustomPath} className="flex gap-2">
           <div className="flex h-11 flex-1 items-center rounded-lg border bg-background pl-3 shadow-xs transition-shadow focus-within:ring-2 focus-within:ring-ring/50">
@@ -58,12 +59,14 @@ export default function Landing() {
               aria-label="Pad path"
             />
           </div>
-          <button
+          <Button
             type="submit"
-            className="inline-flex h-11 items-center justify-center rounded-lg border bg-background px-4 font-medium shadow-xs transition-all hover:bg-accent active:scale-[0.98]"
+            variant="outline"
+            size="lg"
+            className="h-11 rounded-lg px-4 text-base active:scale-[0.98]"
           >
             Open
-          </button>
+          </Button>
         </form>
       </div>
 

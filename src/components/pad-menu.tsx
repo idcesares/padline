@@ -2,17 +2,24 @@ import { useState } from "react";
 import { Check, Copy, Download, MoreHorizontal } from "lucide-react";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 
 export function PadMenu({
   slug,
   getMarkdown,
+  statusLineVisible,
+  onToggleStatusLine,
 }: {
   slug: string;
   getMarkdown: () => string | Promise<string>;
+  statusLineVisible: boolean;
+  onToggleStatusLine: () => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -36,11 +43,15 @@ export function PadMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent"
-        aria-label="Pad menu"
-      >
-        <MoreHorizontal className="size-4" aria-hidden />
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          aria-label="Pad menu"
+        >
+          <MoreHorizontal className="size-4" aria-hidden />
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={copyMarkdown}>
@@ -51,6 +62,13 @@ export function PadMenu({
           <Download className="size-4" />
           Download .md
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem
+          checked={statusLineVisible}
+          onCheckedChange={onToggleStatusLine}
+        >
+          Show status line
+        </DropdownMenuCheckboxItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
