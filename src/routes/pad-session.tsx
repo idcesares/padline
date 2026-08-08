@@ -9,6 +9,10 @@ import { BlockNoteView } from "@blocknote/shadcn";
 import "@blocknote/shadcn/style.css";
 import { Eye, Lock, PenLine } from "lucide-react";
 import { getIdentity, saveIdentity } from "@/lib/identity";
+import { usePadStats } from "@/hooks/use-pad-stats";
+import { useStatusLine } from "@/hooks/use-status-line";
+import { StatusLine, SyncDot } from "@/components/status-line";
+import type { SyncStatus } from "@/components/status-line";
 import {
   fetchPadInfo,
   fetchRoToken,
@@ -39,8 +43,6 @@ const {
 } = defaultBlockSpecs;
 
 const schema = BlockNoteSchema.create({ blockSpecs: textBlockSpecs });
-
-type SyncStatus = "connecting" | "connected" | "disconnected";
 
 type AccessState =
   | { kind: "loading" }
@@ -193,6 +195,7 @@ function ActivePadSession({
 }) {
   const [identity, setIdentity] = useState(getIdentity);
   const { theme, toggleTheme } = useTheme();
+  const { statusLineVisible, toggleStatusLine } = useStatusLine();
   const [doc] = useState(() => new Y.Doc());
   const [status, setStatus] = useState<SyncStatus>("connecting");
   const [ready, setReady] = useState(false);
@@ -273,6 +276,8 @@ function ActivePadSession({
     [provider],
   );
 
+  const { stats, selection } = usePadStats(editor, statusLineVisible);
+
   const handleRename = (name: string) => {
     const next = { ...identity, name };
     saveIdentity(next);
@@ -299,16 +304,9 @@ function ActivePadSession({
               View only
             </span>
           )}
-          <span
-            className={cn(
-              "mx-1 size-2 rounded-full",
-              status === "connected" && "bg-emerald-500",
-              status === "connecting" && "bg-amber-500",
-              status === "disconnected" && "bg-red-500",
-            )}
-            title={status}
-            aria-label={`Sync status: ${status}`}
-          />
+          {!statusLineVisible && (
+            <SyncDot status={status} className="mx-1" labelled />
+          )}
           <Presence
             users={users}
             selfClientId={provider.awareness.clientID}
@@ -332,27 +330,40 @@ function ActivePadSession({
             </>
           )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          <PadMenu slug={slug} getMarkdown={getMarkdown} />
+          <PadMenu
+            slug={slug}
+            getMarkdown={getMarkdown}
+            statusLineVisible={statusLineVisible}
+            onToggleStatusLine={toggleStatusLine}
+          />
         </div>
       </header>
       <main
-        className="relative mx-auto w-full max-w-3xl flex-1 px-4 py-8"
+        className="relative mx-auto w-full max-w-3xl flex-1 px-4 pt-16 pb-24"
         aria-busy={!ready}
       >
         {!ready && (
-          <div className="absolute inset-x-4 top-8">
+          <div className="absolute inset-x-4 top-16">
             <EditorSkeleton />
           </div>
         )}
+        {/*
+          No `translate-y-0` at rest: Tailwind v4 compiles it to the independent
+          `translate` property, whose `0px` (not `none`) creates a stacking
+          context that traps BlockNote's floating toolbars under the header.
+        */}
         <div
           className={cn(
             "transition-all duration-500",
-            ready ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
+            ready ? "opacity-100" : "translate-y-1 opacity-0",
           )}
         >
           <BlockNoteView editor={editor} theme={theme} editable={!readOnly} />
         </div>
       </main>
+      {statusLineVisible && (
+        <StatusLine status={status} stats={stats} selection={selection} />
+      )}
     </div>
   );
 }

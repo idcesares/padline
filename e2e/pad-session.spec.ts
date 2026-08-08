@@ -1,5 +1,17 @@
 import { readFileSync } from "node:fs";
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+
+/**
+ * The pad has connected to its Room.
+ *
+ * The sync indicator lives in the status line by default; the header falls back
+ * to a labelled dot only while the status line is switched off. Both expose
+ * `role="status"`, so this holds either way.
+ */
+const expectConnected = (page: Page, options?: { timeout?: number }) =>
+  expect(
+    page.getByRole("status").filter({ hasText: "Synced" }),
+  ).toBeVisible(options);
 
 const uniqueSlug = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -42,7 +54,7 @@ test.describe("pad session route", () => {
 
     await expect(page).toHaveTitle(`/${slug} — Padline`);
     await expect(page.getByRole("button", { name: "Share this pad" })).toBeVisible();
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+    await expectConnected(page);
     await expect(page.getByRole("main")).toHaveAttribute("aria-busy", "false", {
       timeout: 3_500,
     });
@@ -66,7 +78,7 @@ test.describe("pad session route", () => {
     await page.getByRole("button", { name: "Open pad" }).click();
 
     await expect(page.getByRole("button", { name: "Share this pad" })).toBeVisible();
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+    await expectConnected(page);
     const storedToken = await page.evaluate(
       (key) => localStorage.getItem(key),
       `padline:token:${slug}`,
@@ -93,12 +105,17 @@ test.describe("pad session route", () => {
       };
     });
     await page.goto(`/${slug}`);
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+    await expectConnected(page);
 
     await page.getByRole("button", { name: "Share this pad" }).click();
     await page.getByPlaceholder("Choose a PIN (min. 4 characters)").fill("1234");
     await page.getByRole("button", { name: "Set", exact: true }).click();
     await expect(page.getByText("This pad requires a PIN")).toBeVisible();
+
+    // Close the share dialog: while it is open Radix marks the rest of the page
+    // aria-hidden, so the status line is absent from the accessibility tree.
+    await page.keyboard.press("Escape");
+    await expect(page.getByText("This pad requires a PIN")).toHaveCount(0);
 
     await page.evaluate(() => {
       const sockets = (
@@ -117,9 +134,7 @@ test.describe("pad session route", () => {
       })
       .toBeGreaterThan(1);
 
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible({
-      timeout: 10_000,
-    });
+    await expectConnected(page, { timeout: 10_000 });
     await expect(
       page.getByRole("heading", { name: "This pad is protected" }),
     ).toHaveCount(0);
@@ -166,7 +181,7 @@ test.describe("pad session route", () => {
     await page.goto(`/${slug}?v=${encodeURIComponent(readOnlyToken)}`);
 
     await expect(page.getByText("View only", { exact: true })).toBeVisible();
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+    await expectConnected(page);
     await expect(page.getByRole("button", { name: "Share this pad" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Document history" })).toHaveCount(0);
   });
@@ -178,7 +193,7 @@ test.describe("pad session route", () => {
     const slug = uniqueSlug("cached");
     const cachedText = `cached ${slug}`;
     await page.goto(`/${slug}`);
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+    await expectConnected(page);
     await page.getByRole("textbox").fill(cachedText);
     await expect(page.getByText(cachedText, { exact: true })).toBeVisible();
     await page.waitForTimeout(250);
@@ -202,7 +217,7 @@ test.describe("pad session route", () => {
   }) => {
     const warmSlug = uniqueSlug("warm");
     await page.goto(`/${warmSlug}`);
-    await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+    await expectConnected(page);
     await page.getByRole("link", { name: "Padline" }).click();
     await expect(page).toHaveURL("/");
     await expect(page.getByRole("heading", { name: "Padline" })).toBeVisible();
@@ -232,7 +247,7 @@ test.describe("pad session route", () => {
 
     try {
       await page.goto(`/${slug}`);
-      await expect(page.getByLabel("Sync status: connected")).toBeVisible();
+      await expectConnected(page);
       const block = await request.post(roomPath(slug, "op=admin-block"), {
         headers,
         data: { reason: "browser characterization" },
