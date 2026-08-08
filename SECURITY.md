@@ -4,7 +4,7 @@
 
 **Please do not open a public issue for security vulnerabilities.**
 
-Report privately via [GitHub Security Advisories](https://github.com/idcesares/padline/security/advisories/new) (preferred) or by email to **isaac.dcesares@gmail.com** with `[padline security]` in the subject.
+Report privately via [GitHub Security Advisories](https://github.com/idcesares/padline/security/advisories/new) (preferred) or by email to **contact@padline.page** with `[padline security]` in the subject.
 
 Include what you found, how to reproduce it, and the impact you believe it has. You'll get an acknowledgment as soon as possible, and a fix or a clear response before any public disclosure is expected.
 

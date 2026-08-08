@@ -160,6 +160,24 @@ The deployed service publishes its [Terms of Use](https://padline.page/terms), [
 crawling and AI-assistant-citation policy — see
 [ADR-0012](docs/adr/0012-seo-and-geo.md) for the reasoning.
 
+## How this is built
+
+Padline is written by AI coding agents under human product direction. Product
+decisions, architecture, and trade-offs are human-owned and human-reviewed; the
+agents do implementation, refactoring, and test coverage against specs written
+for them.
+
+That split is auditable rather than asserted. [`docs/adr/`](docs/adr/) carries a
+numbered ADR for every non-obvious decision — what was chosen, what was
+*rejected*, and why — and [`AGENTS.md`](AGENTS.md) is the working contract the
+agents follow.
+
+**This describes how the software is written, not how it runs.** Padline ships
+no AI features and makes no model calls. Pad content stays between your browser
+and its Room and is never sent to a model — AI features are explicitly deferred
+(see [`CONTEXT.md`](CONTEXT.md)).
+
 ## License & author
 
-[MIT](LICENSE) © [Isaac D'Césares](https://github.com/idcesares)
+[MIT](LICENSE) © [Isaac D'Césares](https://github.com/idcesares) — created and
+directed by a human, implemented with AI assistance.
