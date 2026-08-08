@@ -92,11 +92,15 @@ export function HistorySheet({
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger
-        className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        aria-label="Document history"
-      >
-        <History className="size-4" aria-hidden />
+      <SheetTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          aria-label="Document history"
+        >
+          <History className="size-4" aria-hidden />
+        </Button>
       </SheetTrigger>
       <SheetContent>
         <SheetHeader>

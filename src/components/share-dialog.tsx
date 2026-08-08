@@ -108,11 +108,15 @@ export function ShareDialog({
 
   return (
     <Dialog>
-      <DialogTrigger
-        className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        aria-label="Share this pad"
-      >
-        <Share2 className="size-4" aria-hidden />
+      <DialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          aria-label="Share this pad"
+        >
+          <Share2 className="size-4" aria-hidden />
+        </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
