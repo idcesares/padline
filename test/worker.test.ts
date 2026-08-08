@@ -84,9 +84,9 @@ async function isFrozen(stub: RoomStub): Promise<boolean> {
   });
 }
 
-async function openRoomSocket(slug: string): Promise<WebSocket> {
+async function openRoomSocket(slug: string, query = ""): Promise<WebSocket> {
   const response = await SELF.fetch(
-    new Request(roomUrl(slug), {
+    new Request(roomUrl(slug, query), {
       headers: { Upgrade: "websocket" },
     }),
   );
@@ -113,6 +113,59 @@ async function closeWithin(
       { once: true },
     );
   });
+}
+
+/** Closes every socket a test opened, whatever the assertions did. */
+async function withSockets(
+  body: (open: (query?: string) => Promise<WebSocket>) => Promise<void>,
+  slug: string,
+): Promise<void> {
+  const sockets: WebSocket[] = [];
+  try {
+    await body(async (query = "") => {
+      const socket = await openRoomSocket(slug, query);
+      sockets.push(socket);
+      return socket;
+    });
+  } finally {
+    for (const socket of sockets) {
+      if (socket.readyState < WebSocket.CLOSING) socket.close(1000);
+    }
+  }
+}
+
+const setPinRequest = (slug: string, body: unknown, token?: string) =>
+  SELF.fetch(roomUrl(slug, `?op=set-pin${token ? `&token=${token}` : ""}`), {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+const verifyPinRequest = (slug: string, pin: string) =>
+  SELF.fetch(roomUrl(slug, "?op=verify-pin"), {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+  });
+
+const roTokenRequest = (
+  slug: string,
+  token?: string,
+  method: "GET" | "POST" = "GET",
+) =>
+  SELF.fetch(roomUrl(slug, `?op=ro-token${token ? `&token=${token}` : ""}`), {
+    method,
+  });
+
+/** Sets a PIN on a fresh pad and returns the session token that grants. */
+async function protectPad(slug: string, pin = "1234"): Promise<string> {
+  const response = await setPinRequest(slug, { pin });
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { token: string }).token;
+}
+
+async function readOnlyToken(slug: string, token: string): Promise<string> {
+  const response = await roTokenRequest(slug, token);
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { token: string }).token;
 }
 
 describe("PadRoom HTTP interface", () => {
@@ -316,6 +369,247 @@ describe("PadRoom HTTP interface", () => {
     });
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "not-found" });
+  });
+});
+
+/**
+ * ADR-0005/0009 access credentials, characterized through the two transports
+ * that consume them. Most of this was previously covered only by
+ * scripts/api-smoke.mjs, which needs a running server; ADR-0011 puts room
+ * invariants in the Workers-runtime suite. runInDurableObject appears only to
+ * move a stored clock — the backoff window and a session's grant time — which
+ * no external caller can advance. Nothing is seeded through it.
+ */
+describe("PadRoom access credentials", () => {
+  it("refuses a WebSocket on a protected pad until a session is presented", async () => {
+    const slug = uniqueSlug("pin-admission");
+    const token = await protectPad(slug);
+
+    await withSockets(async (open) => {
+      // ADR-0005: the gate is server-side and closes before any document
+      // bytes are sent, not a UI-side lock.
+      expect(await closeWithin(await open(), 250)).toBe(4401);
+      expect(await closeWithin(await open(`?token=${token}`))).toBeNull();
+    }, slug);
+  });
+
+  it("invalidates sessions granted before a PIN change", async () => {
+    const slug = uniqueSlug("pin-change");
+    const first = await protectPad(slug);
+
+    const response = await setPinRequest(slug, { pin: "5678" }, first);
+    expect(response.status).toBe(200);
+    const second = ((await response.json()) as { token: string }).token;
+    expect(second).not.toBe(first);
+
+    // The superseded session must lose both transports at once.
+    expect((await roTokenRequest(slug, first)).status).toBe(401);
+    expect((await roTokenRequest(slug, second)).status).toBe(200);
+
+    await withSockets(async (open) => {
+      expect(await closeWithin(await open(`?token=${first}`), 250)).toBe(4401);
+      expect(await closeWithin(await open(`?token=${second}`))).toBeNull();
+    }, slug);
+  });
+
+  it("reopens a pad when its PIN is removed", async () => {
+    const slug = uniqueSlug("pin-removal");
+    const token = await protectPad(slug);
+
+    let response = await setPinRequest(slug, { remove: true });
+    expect(response.status).toBe(401);
+    await response.body?.cancel();
+
+    response = await setPinRequest(slug, { remove: true }, token);
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    response = await SELF.fetch(roomUrl(slug, "?op=info"));
+    await expect(response.json()).resolves.toEqual({ pinProtected: false });
+
+    await withSockets(async (open) => {
+      expect(await closeWithin(await open())).toBeNull();
+    }, slug);
+
+    // Removal also wipes the sessions it granted. That is not independently
+    // observable here: with no PIN every caller may edit, and the only route
+    // back to a protected pad — set-pin — wipes sessions itself.
+  });
+
+  it("accepts only PINs within the length rule, after trimming", async () => {
+    const slug = uniqueSlug("pin-rule");
+
+    let response = await setPinRequest(slug, { pin: "123" });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid-pin" });
+
+    response = await setPinRequest(slug, { pin: "x".repeat(65) });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid-pin" });
+
+    // Surrounding whitespace is trimmed before the rule and before hashing,
+    // so the trimmed form is what later verifies.
+    response = await setPinRequest(slug, { pin: "  12345  " });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    response = await verifyPinRequest(slug, "12345");
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+
+  it("throttles repeated PIN failures and clears the counter on success", async () => {
+    const slug = uniqueSlug("pin-backoff");
+    const stub = await warmRoom(slug);
+    await protectPad(slug);
+
+    // ADR-0009: five free attempts, then an exponential window.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const failure = await verifyPinRequest(slug, "9999");
+      expect(failure.status).toBe(403);
+      await failure.body?.cancel();
+    }
+
+    let response = await verifyPinRequest(slug, "1234");
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    const throttled = (await response.json()) as {
+      error: string;
+      retryInMs: number;
+    };
+    expect(throttled.error).toBe("too-many-attempts");
+    expect(throttled.retryInMs).toBeGreaterThan(0);
+
+    // The window is real wall-clock time this runtime will not advance, so
+    // the stored failure timestamp is moved instead of waited out.
+    await runInDurableObject<PadRoom, void>(stub, async (_instance, state) => {
+      await state.storage.put("pinFails", { count: 5, lastAt: 0 });
+    });
+
+    response = await verifyPinRequest(slug, "1234");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ token: expect.any(String) });
+
+    // Cleared, not merely aged out: the next wrong PIN is a plain rejection
+    // rather than another throttle.
+    response = await verifyPinRequest(slug, "9999");
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "wrong-pin" });
+  });
+
+  it("stops honouring a session past its lifetime", async () => {
+    const slug = uniqueSlug("session-ttl");
+    const stub = await warmRoom(slug);
+    const token = await protectPad(slug);
+
+    expect((await roTokenRequest(slug, token)).status).toBe(200);
+
+    // ADR-0009: 30 days from grant. Only the grant time is moved; the entry
+    // itself was minted by the real code path.
+    await runInDurableObject<PadRoom, void>(stub, async (_instance, state) => {
+      const sessions =
+        (await state.storage.get<Record<string, number>>("sessions")) ?? {};
+      sessions[token] = Date.now() - 31 * 24 * 60 * 60 * 1000;
+      await state.storage.put("sessions", sessions);
+    });
+
+    expect((await roTokenRequest(slug, token)).status).toBe(401);
+    await withSockets(async (open) => {
+      expect(await closeWithin(await open(`?token=${token}`), 250)).toBe(4401);
+    }, slug);
+  });
+
+  it("mints one read-only token and replaces it only on rotation", async () => {
+    const slug = uniqueSlug("ro-token-lifecycle");
+    const token = await protectPad(slug);
+
+    const first = await readOnlyToken(slug, token);
+    expect(await readOnlyToken(slug, token)).toBe(first);
+
+    const response = await roTokenRequest(slug, token, "POST");
+    expect(response.status).toBe(200);
+    const rotated = ((await response.json()) as { token: string }).token;
+    expect(rotated).not.toBe(first);
+
+    // A rotation is durable, not a one-off response value.
+    expect(await readOnlyToken(slug, token)).toBe(rotated);
+  });
+
+  it("keeps live read-only sockets open across a rotation and refuses the old link", async () => {
+    const slug = uniqueSlug("ro-rotation");
+    const token = await protectPad(slug);
+    const original = await readOnlyToken(slug, token);
+
+    await withSockets(async (open) => {
+      const live = await open(`?ro=${original}`);
+      expect(await closeWithin(live)).toBeNull();
+
+      const response = await roTokenRequest(slug, token, "POST");
+      expect(response.status).toBe(200);
+      const rotated = ((await response.json()) as { token: string }).token;
+
+      // ADR-0009: rotation invalidates the link, not the sessions already
+      // reading through it.
+      expect(await closeWithin(live, 250)).toBeNull();
+      expect(await closeWithin(await open(`?ro=${original}`), 250)).toBe(4403);
+      expect(await closeWithin(await open(`?ro=${rotated}`))).toBeNull();
+    }, slug);
+  });
+
+  it("fails closed on an unknown or never-minted read-only token", async () => {
+    const known = uniqueSlug("ro-unknown");
+    await protectPad(known);
+
+    await withSockets(async (open) => {
+      expect(await closeWithin(await open("?ro=not-a-real-token"), 250)).toBe(
+        4403,
+      );
+    }, known);
+
+    // A pad that has never minted a token refuses every one, rather than
+    // treating "no token stored" as "nothing to check".
+    const fresh = uniqueSlug("ro-never-minted");
+    await withSockets(async (open) => {
+      expect(await closeWithin(await open(`?ro=${crypto.randomUUID()}`), 250)).toBe(
+        4403,
+      );
+    }, fresh);
+  });
+
+  it("wipes every access credential on purge", async () => {
+    const slug = uniqueSlug("purge-credentials");
+    const token = await protectPad(slug);
+    const roToken = await readOnlyToken(slug, token);
+
+    // Leave the backoff counter at the throttling threshold so its survival
+    // would be visible below.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await (await verifyPinRequest(slug, "9999")).body?.cancel();
+    }
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=admin-purge"), {
+      method: "POST",
+      headers: ADMIN_HEADERS,
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    response = await SELF.fetch(roomUrl(slug, "?op=info"));
+    await expect(response.json()).resolves.toEqual({ pinProtected: false });
+
+    await withSockets(async (open) => {
+      // The read-only link is dead, and the unprotected pad admits an editor.
+      expect(await closeWithin(await open(`?ro=${roToken}`), 250)).toBe(4403);
+      expect(await closeWithin(await open())).toBeNull();
+    }, slug);
+
+    // The failure counter went too. Had it survived at the threshold, the
+    // first wrong PIN under the new one would throttle instead of reject.
+    await protectPad(slug, "5678");
+    response = await verifyPinRequest(slug, "9999");
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "wrong-pin" });
   });
 });
 

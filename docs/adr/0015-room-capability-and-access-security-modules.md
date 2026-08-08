@@ -72,7 +72,10 @@ admission, not an HTTP capability.
   PIN lifecycle, and snapshot outcomes through Room HTTP, with no new seam.
 - `roToken` minting stayed with the read-only-link capability rather than moving
   to `RoomSecurity`. It is a capability secret held outside the module that owns
-  the others — a known rough edge, revisited in ADR-0014.
+  the others — a known rough edge, revisited in ADR-0014. **Superseded by
+  ADR-0016**, which moved it and the rest of the credential write side here.
+  The description of `RoomSecurity` above is accurate for the read and validate
+  side only; ADR-0016 extends it to the whole lifecycle.
 
 ## Rejected
 
@@ -92,4 +95,5 @@ ADR-0003 (Room as the pad's authority), ADR-0005 (PIN gates everything;
 read-only links), ADR-0009 (brute-force backoff and token lifetimes), ADR-0010
 (admin concealment, block precedence, purge), ADR-0011 (Cloudflare-native
 verification), and ADR-0014, which later moved persisted pad state out of both
-modules and added `RoomSecurity.clearSecrets()`.
+modules and added `RoomSecurity.clearSecrets()`. ADR-0016 supersedes the
+`roToken` consequence above.

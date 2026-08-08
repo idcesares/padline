@@ -12,7 +12,7 @@ import {
   type BlockRecord,
 } from "./room-capabilities";
 import { RoomPersistence } from "./room-persistence";
-import { RoomSecurity, safeEqual } from "./room-security";
+import { RoomSecurity } from "./room-security";
 
 type Env = {
   PadRoom: DurableObjectNamespace<PadRoom>;
@@ -30,9 +30,10 @@ const MAX_CONNECTIONS_PER_IP = 8;
 type ConnState = { readonly: boolean; ip: string } | null;
 
 /**
- * One pad ↔ one room (ADR-0003). Holds live connections and the PIN/read-only
- * gates (ADR-0005/0008); durability and snapshot history belong to
- * RoomPersistence, and the HTTP surface to RoomCapabilities.
+ * One pad ↔ one room (ADR-0003). Holds live connections and admits them
+ * (ADR-0005/0008), asking RoomSecurity whether a presented credential is
+ * good; durability and snapshot history belong to RoomPersistence, and the
+ * HTTP surface to RoomCapabilities.
  */
 export class PadRoom extends YServer<Env> {
   static callbackOptions = {
@@ -95,10 +96,12 @@ export class PadRoom extends YServer<Env> {
       }
     }
     const url = new URL(ctx.request.url);
+    // Which capability is being claimed is admission's decision; whether the
+    // credential is good is RoomSecurity's (ADR-0016). An empty `?ro=` claims
+    // nothing and falls through to the edit gate.
     const ro = url.searchParams.get("ro");
     if (ro) {
-      const roToken = await this.ctx.storage.get<string>("roToken");
-      if (!roToken || !safeEqual(ro, roToken)) {
+      if (!(await this.security.verifyReadOnlyToken(ro))) {
         conn.close(4403, "invalid-token");
         return;
       }
