@@ -5,7 +5,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const LAST_UPDATED = "July 16, 2026";
-const CONTACT = "isaac.dcesares@gmail.com";
+const CONTACT = "contact@padline.page";
 const REPO = "https://github.com/idcesares/padline";
 
 /** Shared minimal layout for policy pages: header, prose, footer. */
