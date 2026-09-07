@@ -19,6 +19,7 @@ Open a URL → it's a pad. Share the link → you're collaborating. A pad is a l
 - 👁️ **Read-only links** — share a view-only capability URL; rotate it anytime to revoke old copies
 - 🕘 **Snapshot history** — automatic snapshots on idle; restoring is itself an undoable edit, never a rollback
 - 📴 **Offline resilience** — every visited pad is cached in IndexedDB; brief disconnections lose nothing
+- 📊 **Status line** — live word, character, block, and reading-time counts beside a labelled sync indicator; dockable and toggleable per visitor
 - 📤 **Markdown export** — copy or download; your content is never trapped
 - 🛡️ **Abuse invariants** — document size caps, connection caps, message limits, per-IP caps ([ADR-0008](docs/adr/0008-abuse-invariants-only-in-v1.md), [ADR-0009](docs/adr/0009-brute-force-and-token-lifetime-hardening.md))
 
@@ -38,6 +39,7 @@ flowchart LR
 - A **pad** is identified by its slug — the URL path. One pad ↔ one Durable Object room holding live connections, the Yjs document, snapshot history, and the PIN/read-only gates.
 - Authorization happens **before any document bytes are sent**: PIN-protected pads refuse the WebSocket until a valid session token is presented; read-only links connect with a capability token the room enforces.
 - Documents persist to SQLite-backed Durable Object storage; snapshots are taken on an idle trigger and capped at 100 per pad.
+- The Worker is **four modules with one owner each**: WebSocket admission, connection and per-IP caps, and routing (`worker/index.ts`); the HTTP capability surface and takedown precedence (`room-capabilities.ts`); every access credential — PIN, sessions, brute-force backoff, read-only tokens, admin secret (`room-security.ts`); and document durability, snapshots, and the size-cap freeze (`room-persistence.ts`). See [ADR-0015](docs/adr/0015-room-capability-and-access-security-modules.md) and [ADR-0016](docs/adr/0016-room-security-owns-access-credentials.md).
 - Cloudflare serves content-hashed JS/CSS directly from its static asset edge cache; document routes still run through the Worker for crawler metadata and dynamic security headers.
 - The landing, legal, and editor routes load independently, so opening the homepage does not download the BlockNote collaboration graph.
 
@@ -102,7 +104,7 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 # 3. Reply to the reporter confirming action was taken.
 ```
 
-`unblock` reverses a block if it was applied in error. `<host>` is your domain (e.g. `padline.page`) or `127.0.0.1:8791` locally.
+`unblock` reverses a block if it was applied in error. `<host>` is your domain (e.g. `padline.page`) or `127.0.0.1:8788` locally.
 
 **Note:** the Content Policy and Privacy Policy both route reports to the same inbox as [SECURITY.md](SECURITY.md)'s vulnerability reports — triage by content: a bug/exploit goes through SECURITY.md's process, a bad pad goes through this one.
 
@@ -122,20 +124,24 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 ## Project structure
 
 ```
-├── src/                  # React SPA
-│   ├── routes/           #   landing + pad pages
-│   ├── components/       #   presence, share dialog, history, UI primitives
-│   ├── hooks/            #   theme, awareness
-│   └── lib/              #   slug rules, pad HTTP API, identity
-├── worker/               # Cloudflare Worker: routing, OG tags, PadRoom Durable Object
-├── test/                 # Workers-runtime integration tests for the room interface
-├── e2e/                  # Playwright pad-session tests through the public pad URL
-├── scripts/              # smoke tests (HTTP + WebSocket)
+├── src/                        # React SPA
+│   ├── routes/                 #   landing, pad session, legal pages
+│   ├── components/             #   presence, share dialog, history, status line, UI primitives
+│   ├── hooks/                  #   theme, awareness, pad stats, status-line preference
+│   └── lib/                    #   slug rules, pad HTTP API, identity
+├── worker/                     # Cloudflare Worker — one owner per module:
+│   ├── index.ts                #   WebSocket admission, connection + per-IP caps, routing
+│   ├── room-capabilities.ts    #   HTTP capability surface, takedown precedence
+│   ├── room-security.ts        #   PIN, sessions, backoff, read-only tokens, admin secret
+│   └── room-persistence.ts     #   document durability, snapshots, size-cap freeze
+├── test/                       # Workers-runtime integration tests for the room interface
+├── e2e/                        # Playwright pad-session tests through the public pad URL
+├── scripts/                    # smoke suite (HTTP + WebSocket) + the moderation CLI
 ├── docs/
-│   ├── adr/              # architecture decision records (the "why")
-│   └── agents/           # conventions for AI-assisted development
-├── CONTEXT.md            # domain model & ubiquitous language
-└── wrangler.jsonc        # Cloudflare deployment config
+│   ├── adr/                    # architecture decision records (the "why")
+│   └── agents/                 # conventions for AI-assisted development
+├── CONTEXT.md                  # domain model & ubiquitous language
+└── wrangler.jsonc              # Cloudflare deployment config
 ```
 
 The test suite uses Cloudflare's Vitest pool, so Durable Objects, SQLite storage,
