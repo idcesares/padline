@@ -1,5 +1,9 @@
 // Smoke test for the PadRoom HTTP/WS surface. Requires the dev server.
-const arg = process.argv[2] ?? "127.0.0.1:8788";
+import { readFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const noAdmin = argv.includes("--no-admin");
+const arg = argv.find((value) => !value.startsWith("--")) ?? "127.0.0.1:8788";
 const secure = arg.startsWith("https://");
 const HOST = arg.replace(/^https?:\/\//, "");
 const HTTP = secure ? "https" : "http";
@@ -12,6 +16,25 @@ function check(name, cond, extra = "") {
   console.log(`${cond ? "OK  " : "FAIL"} ${name}${extra ? ` — ${extra}` : ""}`);
   if (!cond) failures++;
 }
+
+// The takedown lifecycle is part of this suite, not an optional extra: a run
+// that quietly skips it prints ALL PASS with the whole admin surface untested.
+// Resolve the secret the way e2e/pad-session.spec.ts does — the environment
+// first, then .dev.vars, which wrangler already injects into the Worker — and
+// treat an unrunnable lifecycle as a failure unless --no-admin says otherwise.
+function readDevVar(name) {
+  try {
+    const line = readFileSync(new URL("../.dev.vars", import.meta.url), "utf8")
+      .split(/\r?\n/)
+      .find((candidate) => candidate.trimStart().startsWith(`${name}=`));
+    if (!line) return undefined;
+    return line.slice(line.indexOf("=") + 1).trim().replace(/^['"]|['"]$/g, "");
+  } catch {
+    return undefined;
+  }
+}
+
+const adminSecret = process.env.ADMIN_SECRET ?? readDevVar("ADMIN_SECRET");
 
 function wsResult(url) {
   return new Promise((resolve) => {
@@ -192,13 +215,13 @@ check(
   res.status === 404 && data.error === "unknown-op",
 );
 
-// …and, when ADMIN_SECRET is provided, the full takedown lifecycle.
-if (process.env.ADMIN_SECRET) {
+// …and, when the secret resolves, the full takedown lifecycle.
+if (adminSecret && !noAdmin) {
   const Y = await import("yjs");
   const encoding = await import("lib0/encoding.js");
   const adminSlug = `smoke-admin-${Math.random().toString(36).slice(2, 8)}`;
   const adminBase = `${HTTP}://${HOST}/parties/pad-room/${adminSlug}`;
-  const headers = { authorization: `Bearer ${process.env.ADMIN_SECRET}` };
+  const headers = { authorization: `Bearer ${adminSecret}` };
   const admin = (op, method = "POST", body) =>
     fetch(`${adminBase}?op=${op}`, {
       method,
@@ -280,9 +303,16 @@ if (process.env.ADMIN_SECRET) {
   // Leave no blocked smoke pads behind.
   res = await admin("admin-unblock");
   check("cleanup: unblocked", res.ok);
+} else if (noAdmin) {
+  console.log("SKIP admin lifecycle — --no-admin was passed");
 } else {
-  console.log("SKIP admin lifecycle (set ADMIN_SECRET to run it)");
+  check(
+    "admin: takedown lifecycle is runnable",
+    false,
+    "no ADMIN_SECRET in the environment or .dev.vars — set it, or pass --no-admin to leave the takedown surface untested on purpose",
+  );
 }
 
-console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
+const summary = failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`;
+console.log(noAdmin ? `${summary} (admin lifecycle skipped)` : summary);
 process.exit(failures === 0 ? 0 : 1);
