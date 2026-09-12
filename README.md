@@ -117,7 +117,8 @@ ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge --reason "removal re
 | `npm run test:e2e` | Playwright pad-session tests in real Chromium against the local Worker |
 | `npm run build` | Typecheck + production build |
 | `npm run deploy` | Build + `wrangler deploy` |
-| `node scripts/api-smoke.mjs` | Smoke suite against the local dev server (set `ADMIN_SECRET` to also exercise the takedown lifecycle) |
+| `node scripts/api-smoke.mjs` | Smoke suite against the local dev server, takedown lifecycle included — it reads `ADMIN_SECRET` from the environment or `.dev.vars`, and fails if it finds neither |
+| `node scripts/api-smoke.mjs --no-admin` | Same suite with the takedown lifecycle deliberately skipped |
 | `node scripts/api-smoke.mjs https://your-host` | Same suite against a deployed instance |
 | `node scripts/admin.mjs <host> <slug> <action>` | Moderation CLI: `info` / `block` / `unblock` / `purge` |
 

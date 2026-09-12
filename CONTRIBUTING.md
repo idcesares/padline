@@ -35,6 +35,10 @@ The product invariants in `CONTEXT.md` (URL-first, no friction, real-time by def
    npm run dev                   # in one terminal
    node scripts/api-smoke.mjs    # in another — every check must pass
    ```
+   The smoke suite covers the admin takedown surface too, reading
+   `ADMIN_SECRET` from the environment or `.dev.vars`. It fails when it can
+   find neither, so a run cannot report full coverage while leaving takedown
+   untested; pass `--no-admin` when you mean to skip it.
    If you changed a room invariant, add a focused test under `test/`; these run
    against the real Cloudflare Workers runtime, Durable Object storage, and
    WebSocket implementation. Add or update `scripts/api-smoke.mjs` when the
