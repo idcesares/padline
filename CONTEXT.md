@@ -12,7 +12,12 @@ Padline is a URL-first, no-account, real-time collaborative pad. Visiting a URL 
 - **Read-only link** — a secondary URL with a random token that connects in view-only mode. Enforced by the room (writes refused on that connection), not by UI.
 - **Identity** — a visitor's auto-generated name + color (e.g. "Amber Fox"), stored in localStorage, editable via the presence avatar popover. Not an account; purely for presence.
 - **Presence** — who is in the pad right now: avatars, live cursors, selections. Carried over Yjs awareness.
-- **Takedown** — operator enforcement on a reported pad (ADR-0010): *purge* wipes content, snapshots, and secrets; *block* makes the slug refuse access and show a removed notice instead of minting a fresh pad. Slug-addressed and secret-gated; there is no pad registry or dashboard.
+- **Takedown** — operator enforcement on a reported pad (ADR-0010): *purge* wipes content, snapshots, and secrets; *block* makes the slug refuse access and show a removed notice instead of minting a fresh pad; *freeze* keeps a pad readable but refuses every edit. The room stays the authority for all three. Secret-gated; there is no pad registry or dashboard.
+- **Report** — a notice that a pad breaks the Content Policy or the law, from the public report form, email, Cloudflare, or an authority (ADR-0018). Never proof that the pad exists.
+- **Case** — the unit of moderation: one slug's reports, reviews, decisions, and actions, from the first notice to closing. `violation`, `removal-request`, `appeal`, or `authority-request`; `grave` or `standard` priority.
+- **Moderation ledger** — the single Durable Object that records reports, cases, evidence, and an append-only, hash-chained action log. It records and orchestrates takedowns; it never decides whether a pad is blocked.
+- **Moderation profile** — the one module holding an instance's jurisdiction-specific moderation values: jurisdiction, operator contact, which categories are grave, review targets, retention periods. The mechanism is shared; the profile is local. The repository ships only Brazil's, for `padline.page` (ADR-0018).
+- **Evidence** — a sealed copy of a pad's persisted state captured during review, before anything destructive; hashed, retained for a bounded period, never served to visitors.
 
 ## Product invariants
 
@@ -29,4 +34,4 @@ React 19 · Vite SPA + React Router · Tailwind v4 · shadcn/ui · BlockNote · 
 
 ## Explicitly deferred (phase 2+)
 
-Hosted images/attachments (bundled with Turnstile + in-app reporting — operator-side takedown ops already exist, see ADR-0010), Markdown import, expiration ("self-destruct pads" as a feature, not hygiene), accounts & private pads, CI/CD pipeline, comments, AI features.
+Hosted images/attachments (bundled with per-pad storage quotas — reporting, Turnstile, and case handling come first for text pads, see ADR-0018), Markdown import, expiration ("self-destruct pads" as a feature, not hygiene), accounts & private pads, CI/CD pipeline, comments, AI features.

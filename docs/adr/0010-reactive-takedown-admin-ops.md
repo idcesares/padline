@@ -2,6 +2,12 @@
 
 **Status:** accepted (2026-07-16)
 
+**Partially superseded by ADR-0018** (accepted 2026-09-13, not yet
+implemented): the rejection of an in-app report flow and of any central
+moderation store, and the directly reachable `op=admin-*` surface. The room as
+enforcement authority, the operations themselves, secret concealment, and the
+rejection of a pad registry stand.
+
 ## Context
 
 The published Terms and Content Policy promise enforcement ("pads may be

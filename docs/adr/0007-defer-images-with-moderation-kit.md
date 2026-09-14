@@ -2,6 +2,10 @@
 
 **Status:** accepted (2026-07-14)
 
+**Narrowed by ADR-0018** (2026-09-13): Turnstile and the report/delete flow
+ship first, for text pads. Hosted images still wait for the whole bundle,
+including per-pad storage quotas.
+
 ## Context
 
 BlockNote invites image paste on day one, but anonymous no-account image hosting is a serious abuse magnet — effectively operating a free image host with the owner's name on the Cloudflare account.

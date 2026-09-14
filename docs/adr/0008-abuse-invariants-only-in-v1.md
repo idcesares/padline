@@ -2,6 +2,10 @@
 
 **Status:** accepted (2026-07-14)
 
+**Deferral partly lifted by ADR-0018** (2026-09-13): Turnstile, abuse
+reporting, and admin tooling are now decided for text pads. Quota dashboards
+remain deferred.
+
 ## Context
 
 The proposal's twelve-item security list is sized for a public service. Text-only pads with size caps have a small blast radius; heavy machinery earns its keep only when uploads and traffic exist.
