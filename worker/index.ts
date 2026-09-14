@@ -11,11 +11,15 @@ import {
   RoomCapabilities,
   type BlockRecord,
 } from "./room-capabilities";
+import { LEDGER_NAME, type ModerationLedger } from "./moderation-ledger";
 import { RoomPersistence } from "./room-persistence";
 import { RoomSecurity } from "./room-security";
 
+export { ModerationLedger } from "./moderation-ledger";
+
 type Env = {
   PadRoom: DurableObjectNamespace<PadRoom>;
+  ModerationLedger: DurableObjectNamespace<ModerationLedger>;
   ASSETS: Fetcher;
   /** Bearer secret for op=admin-*; unset disables the admin surface entirely. */
   ADMIN_SECRET?: string;
@@ -181,6 +185,12 @@ function ogResponse(slug: string, origin: string): Response {
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+// ADR-0018: the operator's surface. The ledger authorizes every request itself,
+// so the Worker forwards without inspecting the secret.
+app.all("/api/admin/*", (c) =>
+  c.env.ModerationLedger.getByName(LEDGER_NAME).fetch(c.req.raw),
+);
 
 // ADR-0009: defense-in-depth headers on every HTML/asset response.
 function csp(hostname: string): string {

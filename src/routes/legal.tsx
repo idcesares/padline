@@ -3,9 +3,10 @@ import { Link } from "react-router";
 import { PenLine } from "lucide-react";
 import { useTheme } from "@/hooks/use-theme";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { MODERATION_PROFILE } from "@/lib/moderation-profile";
 
 const LAST_UPDATED = "July 16, 2026";
-const CONTACT = "contact@padline.page";
+const CONTACT = MODERATION_PROFILE.operatorContact;
 const REPO = "https://github.com/idcesares/padline";
 
 /** Shared minimal layout for policy pages: header, prose, footer. */
