@@ -1,11 +1,12 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import {
   MODERATION_PROFILE,
   isReportCategory,
   priorityOf,
 } from "../src/lib/moderation-profile";
-import type { ModerationLedger } from "../worker";
+import type { ModerationLedger, PadRoom } from "../worker";
 import { isAdminRequest } from "../worker/admin-auth";
 import type {
   ActionRecord,
@@ -240,5 +241,245 @@ describe("Moderation ledger", () => {
     await expect(adminGet<ChainVerification>("/actions/verify")).resolves.toMatchObject({
       ok: true,
     });
+  });
+});
+
+const roomUrl = (slug: string, query = "") =>
+  `https://padline.test/parties/pad-room/${slug}${query}`;
+
+type ActResponse = {
+  case?: CaseRecord;
+  actions: ActionRecord[];
+  result?: Record<string, unknown>;
+  error?: string;
+};
+
+function act(caseId: number, body: Record<string, unknown>): Promise<Response> {
+  return SELF.fetch(adminUrl(`/cases/${caseId}/actions`), {
+    method: "POST",
+    headers: ADMIN_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+async function publicInfo(slug: string): Promise<unknown> {
+  const response = await SELF.fetch(roomUrl(slug, "?op=info"));
+  return response.json();
+}
+
+/** Persists a paragraph the way the editor would; the save hook has no HTTP path. */
+async function writePad(slug: string, text: string): Promise<void> {
+  const stub = env.PadRoom.getByName(slug);
+  const warm = await stub.fetch(roomUrl(slug, "?op=info"));
+  await warm.body?.cancel();
+  await runInDurableObject<PadRoom, void>(stub, async (instance) => {
+    const paragraph = new Y.XmlElement("p");
+    paragraph.insert(0, [new Y.XmlText(text)]);
+    const fragment = instance.document.getXmlFragment("document");
+    fragment.insert(fragment.length, [paragraph]);
+    await instance.onSave();
+  });
+}
+
+describe("Moderation ledger takedowns", () => {
+  it("keeps room admin ops off the public route, even with the secret", async () => {
+    const slug = uniqueSlug("ledger-public-route");
+    const ops: Array<[string, string]> = [
+      ["admin-info", "GET"],
+      ["admin-block", "POST"],
+      ["admin-unblock", "POST"],
+      ["admin-purge", "POST"],
+    ];
+    for (const [op, method] of ops) {
+      const response = await SELF.fetch(roomUrl(slug, `?op=${op}`), {
+        method,
+        headers: ADMIN_HEADERS,
+        ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({ error: "unknown-op" });
+    }
+    await expect(publicInfo(slug)).resolves.toEqual({ pinProtected: false });
+  });
+
+  it("reviews a case through the room and keeps content out of the log", async () => {
+    const slug = uniqueSlug("ledger-review");
+    await writePad(slug, "reported paragraph");
+    const { case: opened } = await openedCase({ slug, category: "harassment-doxxing" });
+
+    const response = await act(opened.id, { action: "review" });
+    expect(response.status).toBe(200);
+    const reviewed = (await response.json()) as ActResponse;
+
+    expect(String(reviewed.result?.text)).toContain("reported paragraph");
+    expect(reviewed.actions.map((entry) => [entry.action, entry.outcome])).toEqual([
+      ["review", "pending"],
+      ["review", "ok"],
+    ]);
+    expect(reviewed.actions[1].paramsJson).not.toContain("reported paragraph");
+    expect(JSON.parse(reviewed.actions[1].paramsJson)).toMatchObject({
+      intent: reviewed.actions[0].seq,
+      result: { textChars: expect.any(Number) },
+    });
+    expect(reviewed.case).toMatchObject({
+      status: "reviewing",
+      firstReviewedAt: expect.any(Number),
+    });
+  });
+
+  it("blocks, unblocks, and purges only with a reason, recording each step", async () => {
+    const slug = uniqueSlug("ledger-takedown");
+    await writePad(slug, "content to remove");
+    const { case: opened } = await openedCase({ slug, category: "phishing-malware" });
+
+    let response = await act(opened.id, { action: "block" });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "reason-required" });
+
+    response = await act(opened.id, {
+      action: "block",
+      reason: "credential harvesting form",
+      legalBasis: "Content Policy: phishing",
+    });
+    expect(response.status).toBe(200);
+    const blocked = (await response.json()) as ActResponse;
+    expect(blocked.case).toMatchObject({
+      status: "actioned",
+      actionedAt: expect.any(Number),
+      legalBasis: "Content Policy: phishing",
+    });
+    await expect(publicInfo(slug)).resolves.toEqual({
+      pinProtected: false,
+      removed: true,
+    });
+
+    response = await act(opened.id, { action: "unblock", reason: "blocked in error" });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+    await expect(publicInfo(slug)).resolves.toEqual({ pinProtected: false });
+
+    response = await act(opened.id, {
+      action: "purge",
+      reason: "confirmed phishing",
+      block: true,
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    response = await SELF.fetch(adminUrl(`/pads/${slug}`), { headers: ADMIN_HEADERS });
+    expect(response.status).toBe(200);
+    const inspected = (await response.json()) as ActResponse;
+    expect(inspected.result).toMatchObject({
+      docBytes: 0,
+      snapshots: 0,
+      blocked: { reason: `case ${opened.id}: confirmed phishing` },
+    });
+    expect(inspected.actions.every((entry) => entry.caseId === null)).toBe(true);
+
+    const timeline = await adminGet<CaseTimeline>(`/cases/${opened.id}`);
+    expect(timeline.actions.map((entry) => `${entry.action}:${entry.outcome}`)).toEqual([
+      "case-opened:ok",
+      "block:pending",
+      "block:ok",
+      "unblock:pending",
+      "unblock:ok",
+      "purge:pending",
+      "purge:ok",
+    ]);
+  });
+
+  it("closes a case, refuses further actions, and opens a new case for a new notice", async () => {
+    const slug = uniqueSlug("ledger-close");
+    const { case: opened } = await openedCase({ slug, category: "other" });
+
+    let response = await act(opened.id, { action: "explode", reason: "x" });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid-action" });
+
+    response = await act(opened.id, { action: "dismiss" });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "reason-required" });
+
+    response = await act(opened.id, { action: "dismiss", reason: "not a violation" });
+    expect(response.status).toBe(200);
+    const dismissed = (await response.json()) as ActResponse;
+    expect(dismissed.case).toMatchObject({
+      status: "dismissed",
+      decision: "not a violation",
+      closedAt: expect.any(Number),
+    });
+
+    response = await act(opened.id, { action: "block", reason: "too late" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "case-closed" });
+
+    const reopened = await openedCase({ slug, category: "other" });
+    expect(reopened.created).toBe(true);
+    expect(reopened.case.id).not.toBe(opened.id);
+  });
+
+  it("reconciles intents whose outcome was never recorded", async () => {
+    const slug = uniqueSlug("ledger-reconcile");
+    const { case: opened } = await openedCase({ slug, category: "spam" });
+    const room = env.PadRoom.getByName(slug);
+    const ledger = env.ModerationLedger.getByName("ledger");
+
+    // Simulates an eviction between the room call and the outcome write: the
+    // room applied a block, but only intents reached the log. Both go through
+    // the real room op and the ledger's real append path.
+    const applied = await room.fetch(roomUrl(slug, "?op=admin-block"), {
+      method: "POST",
+      headers: ADMIN_HEADERS,
+      body: "{}",
+    });
+    expect(applied.status).toBe(200);
+    await applied.body?.cancel();
+
+    type Appender = {
+      append(entry: {
+        caseId: number;
+        slug: string;
+        action: string;
+        outcome: "pending";
+      }): Promise<ActionRecord>;
+    };
+    const [blockIntent, unblockIntent] = await runInDurableObject<
+      ModerationLedger,
+      ActionRecord[]
+    >(ledger, async (instance) => {
+      const appender = instance as unknown as Appender;
+      return [
+        await appender.append({ caseId: opened.id, slug, action: "block", outcome: "pending" }),
+        await appender.append({ caseId: opened.id, slug, action: "unblock", outcome: "pending" }),
+      ];
+    });
+
+    const reconcile = async () => {
+      const response = await SELF.fetch(adminUrl("/reconcile"), {
+        method: "POST",
+        headers: ADMIN_HEADERS,
+      });
+      expect(response.status).toBe(200);
+      const { reconciled } = (await response.json()) as { reconciled: ActionRecord[] };
+      return reconciled.filter((entry) => entry.slug === slug);
+    };
+
+    const resolved = await reconcile();
+    expect(
+      resolved.map((entry) => [JSON.parse(entry.paramsJson).intent, entry.outcome]),
+    ).toEqual([
+      [blockIntent.seq, "ok"],
+      [unblockIntent.seq, "failed"],
+    ]);
+    await expect(reconcile()).resolves.toEqual([]);
+
+    const timeline = await adminGet<CaseTimeline>(`/cases/${opened.id}`);
+    expect(timeline.case.status).toBe("actioned");
+
+    const cleanup = await room.fetch(roomUrl(slug, "?op=admin-unblock"), {
+      method: "POST",
+      headers: ADMIN_HEADERS,
+    });
+    await cleanup.body?.cancel();
   });
 });

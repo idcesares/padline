@@ -8,8 +8,12 @@ import {
 } from "../src/lib/moderation-profile";
 import { isValidSlug } from "../src/lib/slug";
 import { isAdminRequest } from "./admin-auth";
+import type { PadRoom } from "./index";
 
-type LedgerEnv = { ADMIN_SECRET?: string };
+type LedgerEnv = {
+  ADMIN_SECRET?: string;
+  PadRoom: DurableObjectNamespace<PadRoom>;
+};
 
 /** The ledger is a single instance; every caller addresses it by this name. */
 export const LEDGER_NAME = "ledger";
@@ -92,8 +96,30 @@ type Row = Record<string, SqlStorageValue>;
 
 const DESCRIPTION_MAX = 2000;
 const CONTACT_MAX = 254;
+const REASON_MAX = 500;
 const GENESIS_HASH = "0".repeat(64);
 const CLOSED_STATUSES: CaseStatus[] = ["dismissed", "closed"];
+
+export const CASE_ACTIONS = [
+  "review",
+  "block",
+  "unblock",
+  "purge",
+  "dismiss",
+  "close",
+] as const;
+export type CaseAction = (typeof CASE_ACTIONS)[number];
+
+/** Operations the room performs; the ledger records them around the call. */
+type RoomAction = Exclude<CaseAction, "dismiss" | "close">;
+
+type RoomActionEntry = NewAction & { action: RoomAction };
+
+type RoomResult =
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; status: number; error: string };
+
+type ActOutcome = { status: number; body: Record<string, unknown> };
 
 /**
  * The action log's hash chain. Each row's hash covers every other column plus
@@ -229,8 +255,266 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       Response.json(await this.verifyChain()),
     );
 
+    app.post("/cases/:id/actions", async (c) => {
+      const id = Number(c.req.param("id"));
+      const found = Number.isInteger(id) ? this.caseById(id) : null;
+      if (!found) return Response.json({ error: "not-found" }, { status: 404 });
+      const body = await readJson(c.req.raw);
+      if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
+      const outcome = await this.act(found, body);
+      return Response.json(outcome.body, { status: outcome.status });
+    });
+
+    // A look at a pad before any notice names it. Still a recorded review.
+    app.get("/pads/:slug", async (c) => {
+      const slug = c.req.param("slug");
+      if (!isValidSlug(slug)) {
+        return Response.json({ error: "invalid-slug" }, { status: 400 });
+      }
+      const outcome = await this.runRoomAction({
+        caseId: null,
+        slug,
+        action: "review",
+      });
+      return Response.json(outcome.body, { status: outcome.status });
+    });
+
+    app.post("/reconcile", async () => Response.json(await this.reconcile()));
+
     app.notFound(() => unknownOperation());
     return app;
+  }
+
+  /**
+   * One operator action on a case. Every decision carries a reason; only a
+   * review may go without one. Closed and dismissed cases take no actions — a
+   * new notice opens a new case.
+   */
+  private async act(
+    found: CaseRecord,
+    body: Record<string, unknown>,
+  ): Promise<ActOutcome> {
+    const { action } = body;
+    if (!CASE_ACTIONS.includes(action as CaseAction)) {
+      return refusal(400, "invalid-action");
+    }
+    if (CLOSED_STATUSES.includes(found.status)) {
+      return refusal(409, "case-closed");
+    }
+    const reason = optionalText(body.reason, REASON_MAX);
+    const legalBasis = optionalText(body.legalBasis, REASON_MAX);
+    if (reason === undefined) return refusal(400, "invalid-reason");
+    if (legalBasis === undefined) return refusal(400, "invalid-legal-basis");
+    if (action !== "review" && !reason) return refusal(400, "reason-required");
+
+    if (action === "dismiss" || action === "close") {
+      const record = await this.append({
+        caseId: found.id,
+        slug: found.slug,
+        action,
+        reason,
+        params: legalBasis ? { legalBasis } : {},
+      });
+      this.sql.exec(
+        `UPDATE cases SET status = ?, closed_at = ?, decision = ?,
+           legal_basis = COALESCE(?, legal_basis)
+         WHERE id = ?`,
+        action === "dismiss" ? "dismissed" : "closed",
+        record.at,
+        reason,
+        legalBasis,
+        found.id,
+      );
+      return {
+        status: 200,
+        body: { case: this.caseById(found.id), actions: [record] },
+      };
+    }
+
+    const params: Record<string, unknown> = {};
+    if (legalBasis) params.legalBasis = legalBasis;
+    if (action === "purge") params.block = body.block === true;
+    return this.runRoomAction({
+      caseId: found.id,
+      slug: found.slug,
+      action: action as RoomAction,
+      reason,
+      params,
+    });
+  }
+
+  /**
+   * ADR-0018's order for anything the room does: record the intent, let the
+   * room act, record the outcome. A failure between the two writes leaves a
+   * pending intent for `reconcile`, never an unrecorded change. Pad content is
+   * returned to the operator but never written to the log.
+   */
+  private async runRoomAction(entry: RoomActionEntry): Promise<ActOutcome> {
+    const intent = await this.append({ ...entry, outcome: "pending" });
+    const result = await this.callRoomFor(entry);
+    const outcome = await this.append({
+      caseId: entry.caseId,
+      slug: entry.slug,
+      action: entry.action,
+      outcome: result.ok ? "ok" : "failed",
+      params: result.ok
+        ? { intent: intent.seq, result: summarize(result.data) }
+        : { intent: intent.seq, error: result.error, status: result.status },
+    });
+    if (result.ok) {
+      this.applyToCase(entry.caseId, entry.action, outcome.at, entry.params);
+    }
+    return {
+      status: result.ok ? 200 : 502,
+      body: {
+        ...(entry.caseId === null ? {} : { case: this.caseById(entry.caseId) }),
+        actions: [intent, outcome],
+        ...(result.ok
+          ? { result: result.data }
+          : { error: "room-failed", detail: result.error }),
+      },
+    };
+  }
+
+  private callRoomFor(entry: RoomActionEntry): Promise<RoomResult> {
+    const note =
+      entry.caseId === null ? entry.reason : `case ${entry.caseId}: ${entry.reason}`;
+    switch (entry.action) {
+      case "review":
+        return this.callRoom(entry.slug, "admin-info", "GET");
+      case "block":
+        return this.callRoom(entry.slug, "admin-block", "POST", { reason: note });
+      case "unblock":
+        return this.callRoom(entry.slug, "admin-unblock", "POST", {});
+      case "purge":
+        return this.callRoom(entry.slug, "admin-purge", "POST", {
+          block: entry.params?.block === true,
+          reason: note,
+        });
+    }
+  }
+
+  private applyToCase(
+    caseId: number | null,
+    action: RoomAction,
+    at: number,
+    params: Record<string, unknown> | undefined,
+  ): void {
+    if (caseId === null) return;
+    if (action === "review") {
+      this.sql.exec(
+        `UPDATE cases SET first_reviewed_at = COALESCE(first_reviewed_at, ?),
+           status = CASE status WHEN 'open' THEN 'reviewing' ELSE status END
+         WHERE id = ?`,
+        at,
+        caseId,
+      );
+    } else if (action === "block" || action === "purge") {
+      this.sql.exec(
+        `UPDATE cases SET actioned_at = COALESCE(actioned_at, ?), status = 'actioned'
+         WHERE id = ?`,
+        at,
+        caseId,
+      );
+    }
+    if (typeof params?.legalBasis === "string") {
+      this.sql.exec(
+        "UPDATE cases SET legal_basis = ? WHERE id = ?",
+        params.legalBasis,
+        caseId,
+      );
+    }
+  }
+
+  /**
+   * Resolves intents that never got an outcome — an eviction or crash between
+   * the room call and the second write — by asking the room what is true now.
+   * A review cannot be observed after the fact, so it resolves as failed.
+   */
+  private async reconcile(): Promise<{ reconciled: ActionRecord[] }> {
+    const pending = this.sql
+      .exec(
+        `SELECT * FROM actions AS intent
+         WHERE intent.outcome = 'pending' AND NOT EXISTS (
+           SELECT 1 FROM actions AS result
+           WHERE result.outcome != 'pending'
+             AND json_extract(result.params_json, '$.intent') = intent.seq
+         )
+         ORDER BY intent.seq`,
+      )
+      .toArray()
+      .map(toAction);
+
+    const reconciled: ActionRecord[] = [];
+    for (const intent of pending) {
+      const params = JSON.parse(intent.paramsJson) as Record<string, unknown>;
+      const observed = await this.callRoom(intent.slug, "admin-info", "GET");
+      let applied = false;
+      if (observed.ok) {
+        const blocked = observed.data.blocked != null;
+        const empty =
+          observed.data.docBytes === 0 && observed.data.snapshots === 0;
+        applied =
+          intent.action === "block"
+            ? blocked
+            : intent.action === "unblock"
+              ? !blocked
+              : intent.action === "purge"
+                ? empty && (params.block !== true || blocked)
+                : false;
+      }
+      const record = await this.append({
+        caseId: intent.caseId,
+        slug: intent.slug,
+        action: intent.action,
+        outcome: applied ? "ok" : "failed",
+        params: {
+          intent: intent.seq,
+          reconciled: true,
+          observed: observed.ok ? summarize(observed.data) : { error: observed.error },
+        },
+      });
+      if (applied) {
+        this.applyToCase(intent.caseId, intent.action as RoomAction, record.at, params);
+      }
+      reconciled.push(record);
+    }
+    return { reconciled };
+  }
+
+  /** Room admin ops through the stub: the public route refuses them (ADR-0018). */
+  private async callRoom(
+    slug: string,
+    op: string,
+    method: "GET" | "POST",
+    body?: unknown,
+  ): Promise<RoomResult> {
+    try {
+      const response = await this.env.PadRoom.getByName(slug).fetch(
+        `https://moderation-ledger.internal/parties/pad-room/${slug}?op=${op}`,
+        {
+          method,
+          headers: { authorization: `Bearer ${this.env.ADMIN_SECRET}` },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
+      );
+      const data = (await response.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      if (response.ok && data) return { ok: true, data };
+      return {
+        ok: false,
+        status: response.status,
+        error: typeof data?.error === "string" ? data.error : `http-${response.status}`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /**
@@ -479,6 +763,16 @@ function toAction(row: Row): ActionRecord {
     prevHash: row.prev_hash as string,
     hash: row.hash as string,
   };
+}
+
+/** Content never enters the action log; only its size does. */
+function summarize(data: Record<string, unknown>): Record<string, unknown> {
+  const { text, ...rest } = data;
+  return typeof text === "string" ? { ...rest, textChars: text.length } : rest;
+}
+
+function refusal(status: number, error: string): ActOutcome {
+  return { status, body: { error } };
 }
 
 /** `null` when absent or blank, `undefined` when present but unusable. */

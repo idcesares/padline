@@ -244,6 +244,17 @@ export default {
       return Response.redirect(requestUrl.toString(), 301);
     }
 
+    // ADR-0018: room admin ops are reachable only from the moderation ledger,
+    // which calls the room's stub directly — so no review or takedown happens
+    // without a record. The public route answers like any unknown op, whoever
+    // asks and whatever secret they present.
+    if (
+      requestUrl.pathname.startsWith("/parties/") &&
+      requestUrl.searchParams.get("op")?.startsWith("admin-")
+    ) {
+      return Response.json({ error: "unknown-op" }, { status: 404 });
+    }
+
     const roomResponse = await routePartykitRequest(request, env as never);
     if (roomResponse) return roomResponse;
 

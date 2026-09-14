@@ -67,7 +67,8 @@ reports — is a question for your own jurisdiction.
 
 ## Status
 
-Today, instances have the takedown operations of
-[ADR-0010](adr/0010-reactive-takedown-admin-ops.md). The report channel, case
-ledger, evidence capture, and moderation profile of ADR-0018 are decided but not
-yet implemented.
+Today, instances have the moderation profile and the case ledger of
+ADR-0018: notices are recorded as cases, and every review and takedown
+([ADR-0010](adr/0010-reactive-takedown-admin-ops.md)'s operations) runs through
+the ledger and its hash-chained action log. The public report channel, evidence
+capture, freeze, and export are decided but not yet implemented.
