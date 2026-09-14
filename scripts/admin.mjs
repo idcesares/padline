@@ -192,7 +192,7 @@ switch (command) {
       console.log("\nNotices:");
       for (const report of data.reports) {
         console.log(
-          `  ${when(report.receivedAt)} ${report.source} ${report.category}${report.contact ? ` <${report.contact}>` : ""}${report.description ? ` — ${report.description}` : ""}`,
+          `  ${when(report.receivedAt)} ${report.source} ${report.category}${report.reference ? ` ref ${report.reference}` : ""}${report.contact ? ` <${report.contact}>` : ""}${report.description ? ` — ${report.description}` : ""}`,
         );
       }
       console.log("\nActions:");

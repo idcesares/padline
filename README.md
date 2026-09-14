@@ -85,11 +85,12 @@ Operating a public instance means being able to act on content reports — the p
 **One-time setup**, before you need it:
 
 ```sh
-npx wrangler secret put ADMIN_SECRET   # paste a long random value; store it in a password manager
+npx wrangler secret put ADMIN_SECRET       # paste a long random value; store it in a password manager
+npx wrangler secret put TURNSTILE_SECRET   # from a Turnstile widget created for your domain
 npm run deploy
 ```
 
-Until this is done, the admin surface doesn't exist on your instance — every admin request answers exactly like an unknown op.
+Until this is done, the admin surface doesn't exist on your instance — every admin request answers exactly like an unknown op — and public reports to `/api/reports` are refused with `503`. Add a Cloudflare rate-limiting rule on `/api/reports` as the outer layer; Turnstile is verified server-side before anything is stored.
 
 **When a report arrives** (content policy violation, or a privacy removal request), the slug is in the URL the reporter gave you. The CLI reads `ADMIN_SECRET` from the environment or `.dev.vars`:
 

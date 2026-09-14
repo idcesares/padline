@@ -14,6 +14,8 @@ npm run dev      # http://127.0.0.1:8788
 
 Everything runs locally — the Worker, the Durable Objects, and SQLite storage are all emulated by `wrangler` via the Vite plugin. No Cloudflare account is needed until you deploy.
 
+Local secrets live in `.dev.vars` (gitignored): `ADMIN_SECRET=<any long value>` for the moderation surface, and `TURNSTILE_SECRET=1x0000000000000000000000000000000AA` — Turnstile's public always-pass test secret — so the report form works against the dev server. Never deploy the test secret; `scripts/api-smoke.mjs` fails a remote host that accepts Turnstile's test token.
+
 ## Before you code: read the docs
 
 The repo is documentation-first. Two files tell you almost everything:

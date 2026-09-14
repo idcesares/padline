@@ -1,9 +1,10 @@
 # ADR-0018: Notice-and-action moderation with a case ledger
 
 **Status:** accepted (2026-09-13) — phase 1 in progress: the moderation
-profile, the ledger, and the recorded takedown path (room admin operations
-closed on the public route) are implemented; public reporting, evidence
-capture, freeze, statement of reasons, bulk actions, and export are not yet.
+profile, the ledger, the recorded takedown path (room admin operations closed
+on the public route), and the Turnstile-gated report API are implemented; the
+report form, operator notification, evidence capture, freeze, statement of
+reasons, bulk actions, and export are not yet.
 
 Partially supersedes ADR-0010 (the rejection of an in-app report flow and of
 any central moderation store, and the directly reachable `op=admin-*` surface).
