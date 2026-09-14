@@ -80,6 +80,8 @@ Your instance is live at `https://padline.<your-subdomain>.workers.dev`. To use 
 
 Operating a public instance means being able to act on content reports — the published [Content Policy](https://padline.page/content-policy) and [Privacy Policy](https://padline.page/privacy) both promise it. There's no dashboard and no pad registry by design (see [ADR-0010](docs/adr/0010-reactive-takedown-admin-ops.md)) — reports arrive by email with a URL, and you act on that one slug.
 
+**The legal responsibility for a public instance is yours.** `padline.page` is operated by an individual in Brazil, and its policies and planned moderation design ([ADR-0018](docs/adr/0018-notice-and-action-moderation.md)) were written for Brazilian law. Before opening a fork to the public, read [Operating a public instance](docs/operating-a-public-instance.md) — it lists what is Brazil-specific and what to redo for your jurisdiction.
+
 **One-time setup**, before you need it:
 
 ```sh
@@ -158,7 +160,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, 
 
 ## Policies
 
-The deployed service publishes its [Terms of Use](https://padline.page/terms), [Privacy Policy](https://padline.page/privacy), and [Content Policy](https://padline.page/content-policy) — plain-language pages served by the app itself (`src/routes/legal.tsx`). If you self-host, adapt them to your own deployment.
+The deployed service publishes its [Terms of Use](https://padline.page/terms), [Privacy Policy](https://padline.page/privacy), and [Content Policy](https://padline.page/content-policy) — plain-language pages served by the app itself (`src/routes/legal.tsx`). They are written for `padline.page`'s operator under Brazilian law; if you self-host, rewrite them for your own deployment and jurisdiction — see [Operating a public instance](docs/operating-a-public-instance.md).
 
 ## SEO & discoverability
 
