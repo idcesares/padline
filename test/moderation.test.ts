@@ -1,4 +1,9 @@
-import { env, runInDurableObject, SELF } from "cloudflare:test";
+import {
+  env,
+  runDurableObjectAlarm,
+  runInDurableObject,
+  SELF,
+} from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import {
@@ -12,6 +17,7 @@ import type {
   ActionRecord,
   CaseRecord,
   ChainVerification,
+  EvidenceRecord,
   ReportRecord,
 } from "../worker/moderation-ledger";
 
@@ -647,6 +653,152 @@ describe("Freeze, disconnect, and the statement of reasons", () => {
     const again = await openRoomSocket(slug);
     expect(await closeWithin(again)).toBeNull();
     again.close(1000);
+  });
+});
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+type CaptureResponse = ActResponse & { result: { evidence: EvidenceRecord } };
+type EvidenceBundle = { evidence: EvidenceRecord; doc: string; text: string };
+
+describe("Evidence", () => {
+  it("seals a document over the chunk size byte-identical, with matching hashes", async () => {
+    const slug = uniqueSlug("evidence");
+    await writePad(slug, "evidence ".repeat(160_000));
+    const { case: opened } = await openedCase({ slug, category: "phishing-malware" });
+
+    const response = await act(opened.id, { action: "capture" });
+    expect(response.status).toBe(200);
+    const captured = (await response.json()) as CaptureResponse;
+    const { evidence } = captured.result;
+    expect(evidence.docBytes).toBeGreaterThan(1024 * 1024);
+    expect(evidence.retainUntil).toBeNull();
+    expect(captured.case).toMatchObject({ status: "reviewing" });
+    // The log carries hashes and sizes, never the content.
+    expect(captured.actions[1].paramsJson).not.toContain("evidence evidence");
+    expect(JSON.parse(captured.actions[1].paramsJson).result).toMatchObject({
+      evidenceId: evidence.id,
+      docSha256: evidence.docSha256,
+    });
+
+    const stored = await runInDurableObject<PadRoom, Uint8Array>(
+      env.PadRoom.getByName(slug),
+      async (_instance, state) =>
+        new Uint8Array((await state.storage.get<Uint8Array>("doc"))!),
+    );
+    expect(await sha256(stored)).toBe(evidence.docSha256);
+
+    const download = await SELF.fetch(adminUrl(`/evidence/${evidence.id}/download`), {
+      headers: ADMIN_HEADERS,
+    });
+    expect(download.status).toBe(200);
+    const bundle = (await download.json()) as EvidenceBundle;
+    const doc = Uint8Array.from(atob(bundle.doc), (character) => character.charCodeAt(0));
+    expect(doc.byteLength).toBe(stored.byteLength);
+    expect(await sha256(doc)).toBe(evidence.docSha256);
+    expect(await sha256(new TextEncoder().encode(bundle.text))).toBe(evidence.textSha256);
+    expect(bundle.text).toContain("evidence evidence");
+
+    const timeline = await adminGet<CaseTimeline & { evidence: EvidenceRecord[] }>(
+      `/cases/${opened.id}`,
+    );
+    expect(timeline.evidence.map((entry) => entry.id)).toEqual([evidence.id]);
+    expect(timeline.actions.map((entry) => entry.action)).toContain("evidence-download");
+  });
+
+  it("refuses to capture for a removal request", async () => {
+    const { case: opened } = await openedCase({
+      slug: uniqueSlug("evidence-removal"),
+      kind: "removal-request",
+      category: "privacy",
+    });
+    const response = await act(opened.id, { action: "capture" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "capture-not-allowed" });
+  });
+
+  it("keeps evidence while its case is open and expires it after closing, unless held", async () => {
+    const ledger = env.ModerationLedger.getByName("ledger");
+    const capture = async (contact?: string) => {
+      const slug = uniqueSlug("evidence-retention");
+      await writePad(slug, "retained content");
+      const { case: opened } = await openedCase({
+        slug,
+        category: "spam",
+        ...(contact ? { contact } : {}),
+      });
+      const response = await act(opened.id, { action: "capture" });
+      const { result } = (await response.json()) as CaptureResponse;
+      return { caseId: opened.id, evidenceId: result.evidence.id };
+    };
+    const expiring = await capture("reporter@example.com");
+    const held = await capture();
+
+    let response = await SELF.fetch(adminUrl(`/evidence/${held.evidenceId}/hold`), {
+      method: "POST",
+      headers: ADMIN_HEADERS,
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+    await response.body?.cancel();
+    response = await SELF.fetch(adminUrl(`/evidence/${held.evidenceId}/hold`), {
+      method: "POST",
+      headers: ADMIN_HEADERS,
+      body: JSON.stringify({ reason: "preservation requested by an authority" }),
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    for (const { caseId } of [expiring, held]) {
+      const closed = await act(caseId, { action: "close", reason: "handled" });
+      expect(closed.status).toBe(200);
+      await closed.body?.cancel();
+    }
+    const { evidence: closedEvidence } = await adminGet<{ evidence: EvidenceRecord }>(
+      `/evidence/${expiring.evidenceId}`,
+    );
+    const retentionMs = MODERATION_PROFILE.evidenceRetentionDays * 24 * 60 * 60 * 1000;
+    expect(closedEvidence.retainUntil! - Date.now()).toBeGreaterThan(retentionMs - 60_000);
+
+    // Moving stored clocks past retention, as no interface can age a case.
+    await runInDurableObject<ModerationLedger, void>(ledger, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE evidence SET retain_until = 1 WHERE id IN (?, ?)",
+        expiring.evidenceId,
+        held.evidenceId,
+      );
+      state.storage.sql.exec("UPDATE cases SET closed_at = 1 WHERE id = ?", expiring.caseId);
+    });
+    expect(await runDurableObjectAlarm(ledger)).toBe(true);
+
+    response = await SELF.fetch(adminUrl(`/evidence/${expiring.evidenceId}/download`), {
+      headers: ADMIN_HEADERS,
+    });
+    expect(response.status).toBe(410);
+    await expect(response.json()).resolves.toEqual({ error: "evidence-expired" });
+
+    response = await SELF.fetch(adminUrl(`/evidence/${held.evidenceId}/download`), {
+      headers: ADMIN_HEADERS,
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    const expiredTimeline = await adminGet<CaseTimeline>(`/cases/${expiring.caseId}`);
+    expect(expiredTimeline.reports[0].contact).toBeNull();
+    const logged = expiredTimeline.actions.map((entry) => entry.action);
+    expect(logged).toContain("evidence-expired");
+    expect(logged).toContain("contact-expired");
+
+    const heldTimeline = await adminGet<CaseTimeline>(`/cases/${held.caseId}`);
+    expect(heldTimeline.actions.map((entry) => entry.action)).not.toContain("evidence-expired");
+    await expect(adminGet<ChainVerification>("/actions/verify")).resolves.toMatchObject({
+      ok: true,
+    });
   });
 });
 

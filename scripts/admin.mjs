@@ -6,7 +6,9 @@
 //
 // ADMIN_SECRET is read from the environment, then .dev.vars.
 
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const USAGE = `Usage:
   node scripts/admin.mjs <host> cases [--status open] [--priority grave] [--slug <slug>]
@@ -14,9 +16,12 @@ const USAGE = `Usage:
         [--kind violation|removal-request|appeal|authority-request]
         [--source email|cloudflare|authority|other] [--note "..."] [--contact "..."]
   node scripts/admin.mjs <host> case <id>
-  node scripts/admin.mjs <host> case <id> review
+  node scripts/admin.mjs <host> case <id> review|capture
   node scripts/admin.mjs <host> case <id> freeze|unfreeze|disconnect|block|unblock|purge|dismiss|close --reason "..."
         [--legal-basis "..."] [--block]      (--block applies to purge)
+  node scripts/admin.mjs <host> evidence <id>
+  node scripts/admin.mjs <host> evidence <id> download [--out <dir>]
+  node scripts/admin.mjs <host> evidence <id> hold|release --reason "..."
   node scripts/admin.mjs <host> pad <slug> info
   node scripts/admin.mjs <host> reconcile
   node scripts/admin.mjs <host> verify-chain
@@ -128,6 +133,20 @@ function printActions(actions) {
   }
 }
 
+function printEvidence(evidence) {
+  console.log(
+    `evidence #${evidence.id} — case #${evidence.caseId} /${evidence.slug}, captured ${when(evidence.capturedAt)}`,
+  );
+  console.log(`  document ${evidence.docBytes} bytes  sha256 ${evidence.docSha256}`);
+  console.log(`  text     ${evidence.textBytes} bytes  sha256 ${evidence.textSha256}`);
+  const retention = evidence.deletedAt
+    ? `deleted ${when(evidence.deletedAt)}`
+    : evidence.retainUntil
+      ? `kept until ${when(evidence.retainUntil)}`
+      : "kept while the case is open";
+  console.log(`  ${retention}${evidence.hold ? " · ON HOLD" : ""}`);
+}
+
 function printReview(result = {}) {
   const { text, ...meta } = result;
   console.log(JSON.stringify(meta, null, 2));
@@ -195,6 +214,10 @@ switch (command) {
           `  ${when(report.receivedAt)} ${report.source} ${report.category}${report.reference ? ` ref ${report.reference}` : ""}${report.contact ? ` <${report.contact}>` : ""}${report.description ? ` — ${report.description}` : ""}`,
         );
       }
+      if (data.evidence.length) {
+        console.log("\nEvidence:");
+        for (const evidence of data.evidence) printEvidence(evidence);
+      }
       console.log("\nActions:");
       printActions(data.actions);
       break;
@@ -212,11 +235,61 @@ switch (command) {
       }),
     );
     if (verb === "review") printReview(data.result);
+    else if (verb === "capture") printEvidence(data.result.evidence);
     else if (data.result) console.log(JSON.stringify(data.result, null, 2));
     console.log();
     printCase(data.case);
     printActions(data.actions);
     break;
+  }
+
+  case "evidence": {
+    const [target, verb] = rest;
+    const id = Number(target);
+    if (!Number.isInteger(id)) die(USAGE);
+
+    if (!verb) {
+      printEvidence(expectOk(await call(`/evidence/${id}`)).evidence);
+      break;
+    }
+
+    if (verb === "download") {
+      const data = expectOk(await call(`/evidence/${id}/download`));
+      const doc = Buffer.from(data.doc, "base64");
+      const text = Buffer.from(data.text, "utf8");
+      const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+      if (
+        sha256(doc) !== data.evidence.docSha256 ||
+        sha256(text) !== data.evidence.textSha256
+      ) {
+        die("Hash mismatch: the download does not match the sealed evidence. Nothing was written.");
+      }
+      const outDir = flags.out ?? ".";
+      mkdirSync(outDir, { recursive: true });
+      const base = join(outDir, `${data.evidence.slug}-evidence-${id}`);
+      writeFileSync(`${base}.yjs`, doc);
+      writeFileSync(`${base}.txt`, text);
+      writeFileSync(
+        `${base}.manifest.json`,
+        `${JSON.stringify({ ...data.evidence, host: origin, downloadedAt: new Date().toISOString() }, null, 2)}\n`,
+      );
+      printEvidence(data.evidence);
+      console.log(`\nWrote ${base}.yjs, .txt, and .manifest.json — both hashes verified.`);
+      break;
+    }
+
+    if (verb === "hold" || verb === "release") {
+      const data = expectOk(
+        await call(`/evidence/${id}/${verb}`, {
+          method: "POST",
+          body: { reason: flags.reason },
+        }),
+      );
+      printEvidence(data.evidence);
+      break;
+    }
+
+    die(USAGE);
   }
 
   case "pad": {
