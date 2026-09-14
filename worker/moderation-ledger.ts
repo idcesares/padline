@@ -120,6 +120,9 @@ const CLOSED_STATUSES: CaseStatus[] = ["dismissed", "closed"];
 
 export const CASE_ACTIONS = [
   "review",
+  "freeze",
+  "unfreeze",
+  "disconnect",
   "block",
   "unblock",
   "purge",
@@ -385,6 +388,10 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     const params: Record<string, unknown> = {};
     if (legalBasis) params.legalBasis = legalBasis;
     if (action === "purge") params.block = body.block === true;
+    // The case's category becomes the room's public statement of reasons.
+    if (action === "block" || action === "freeze" || action === "purge") {
+      params.category = found.category;
+    }
     return this.runRoomAction({
       caseId: found.id,
       slug: found.slug,
@@ -430,17 +437,25 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
   private callRoomFor(entry: RoomActionEntry): Promise<RoomResult> {
     const note =
       entry.caseId === null ? entry.reason : `case ${entry.caseId}: ${entry.reason}`;
+    const category = entry.params?.category;
     switch (entry.action) {
       case "review":
         return this.callRoom(entry.slug, "admin-info", "GET");
+      case "freeze":
+        return this.callRoom(entry.slug, "admin-freeze", "POST", { reason: note, category });
+      case "unfreeze":
+        return this.callRoom(entry.slug, "admin-unfreeze", "POST", {});
+      case "disconnect":
+        return this.callRoom(entry.slug, "admin-disconnect", "POST", {});
       case "block":
-        return this.callRoom(entry.slug, "admin-block", "POST", { reason: note });
+        return this.callRoom(entry.slug, "admin-block", "POST", { reason: note, category });
       case "unblock":
         return this.callRoom(entry.slug, "admin-unblock", "POST", {});
       case "purge":
         return this.callRoom(entry.slug, "admin-purge", "POST", {
           block: entry.params?.block === true,
           reason: note,
+          category,
         });
     }
   }
@@ -460,7 +475,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
         at,
         caseId,
       );
-    } else if (action === "block" || action === "purge") {
+    } else if (action === "block" || action === "freeze" || action === "purge") {
       this.sql.exec(
         `UPDATE cases SET actioned_at = COALESCE(actioned_at, ?), status = 'actioned'
          WHERE id = ?`,
@@ -503,16 +518,18 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       let applied = false;
       if (observed.ok) {
         const blocked = observed.data.blocked != null;
+        const frozen = observed.data.frozen != null;
         const empty =
           observed.data.docBytes === 0 && observed.data.snapshots === 0;
-        applied =
-          intent.action === "block"
-            ? blocked
-            : intent.action === "unblock"
-              ? !blocked
-              : intent.action === "purge"
-                ? empty && (params.block !== true || blocked)
-                : false;
+        // A review or a disconnect leaves nothing to observe afterwards.
+        const observable: Partial<Record<string, boolean>> = {
+          block: blocked,
+          unblock: !blocked,
+          freeze: frozen,
+          unfreeze: !frozen,
+          purge: empty && (params.block !== true || blocked),
+        };
+        applied = observable[intent.action] ?? false;
       }
       const record = await this.append({
         caseId: intent.caseId,

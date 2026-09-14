@@ -351,6 +351,8 @@ describe("Moderation ledger takedowns", () => {
     await expect(publicInfo(slug)).resolves.toEqual({
       pinProtected: false,
       removed: true,
+      removedAt: expect.any(Number),
+      category: "phishing-malware",
     });
 
     response = await act(opened.id, { action: "unblock", reason: "blocked in error" });
@@ -481,6 +483,170 @@ describe("Moderation ledger takedowns", () => {
       headers: ADMIN_HEADERS,
     });
     await cleanup.body?.cancel();
+  });
+});
+
+async function openRoomSocket(slug: string): Promise<WebSocket> {
+  const response = await SELF.fetch(
+    new Request(roomUrl(slug), { headers: { Upgrade: "websocket" } }),
+  );
+  expect(response.status).toBe(101);
+  const socket = response.webSocket!;
+  socket.accept();
+  return socket;
+}
+
+/** Resolves with the close code, or null if the socket stays open. */
+function closeWithin(socket: WebSocket, timeoutMs = 250): Promise<number | null> {
+  if (socket.readyState === WebSocket.CLOSED) return Promise.resolve(-1);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    socket.addEventListener(
+      "close",
+      (event) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      },
+      { once: true },
+    );
+  });
+}
+
+async function editorCanWrite(slug: string): Promise<boolean> {
+  return runInDurableObject<PadRoom, boolean>(
+    env.PadRoom.getByName(slug),
+    (instance) =>
+      !instance.isReadOnly({
+        state: { readonly: false, ip: "" },
+      } as unknown as Parameters<PadRoom["isReadOnly"]>[0]),
+  );
+}
+
+describe("Freeze, disconnect, and the statement of reasons", () => {
+  it("freezes a pad: readable, refusing edits, PIN changes, and restores", async () => {
+    const slug = uniqueSlug("freeze");
+    await writePad(slug, "under review");
+    const { case: opened } = await openedCase({ slug, category: "defamation" });
+    const socket = await openRoomSocket(slug);
+    expect(await editorCanWrite(slug)).toBe(true);
+
+    try {
+      // Listen first: the room closes the socket before the action responds.
+      const closed = closeWithin(socket, 5000);
+      const response = await act(opened.id, { action: "freeze", reason: "pending review" });
+      expect(response.status).toBe(200);
+      const frozen = (await response.json()) as ActResponse;
+      expect(frozen.case?.status).toBe("actioned");
+      expect(await closed).toBe(4409);
+    } finally {
+      if (socket.readyState < WebSocket.CLOSING) socket.close(1000);
+    }
+
+    await expect(publicInfo(slug)).resolves.toEqual({
+      pinProtected: false,
+      frozen: true,
+      frozenAt: expect.any(Number),
+      category: "defamation",
+    });
+    expect(await editorCanWrite(slug)).toBe(false);
+
+    let response = await SELF.fetch(roomUrl(slug, "?op=set-pin"), {
+      method: "POST",
+      body: JSON.stringify({ pin: "1234" }),
+    });
+    expect(response.status).toBe(423);
+    await expect(response.json()).resolves.toEqual({ error: "pad-frozen" });
+
+    response = await SELF.fetch(roomUrl(slug, "?op=restore"), {
+      method: "POST",
+      body: JSON.stringify({ id: 1 }),
+    });
+    expect(response.status).toBe(423);
+    await response.body?.cancel();
+
+    // Still readable: a frozen pad admits sockets and serves its history.
+    const reader = await openRoomSocket(slug);
+    expect(await closeWithin(reader)).toBeNull();
+    reader.close(1000);
+    response = await SELF.fetch(roomUrl(slug, "?op=snapshots"));
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+
+    response = await act(opened.id, { action: "unfreeze", reason: "no violation found" });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+    await expect(publicInfo(slug)).resolves.toEqual({ pinProtected: false });
+    expect(await editorCanWrite(slug)).toBe(true);
+  });
+
+  it("keeps a freeze across eviction", async () => {
+    const slug = uniqueSlug("freeze-evict");
+    const { case: opened } = await openedCase({ slug, category: "spam" });
+    const response = await act(opened.id, { action: "freeze", reason: "pending review" });
+    await response.body?.cancel();
+
+    const { evictDurableObject } = await import("cloudflare:test");
+    await evictDurableObject(env.PadRoom.getByName(slug));
+    await expect(publicInfo(slug)).resolves.toMatchObject({ frozen: true });
+    expect(await editorCanWrite(slug)).toBe(false);
+  });
+
+  it("lets a block outrank a freeze", async () => {
+    const slug = uniqueSlug("freeze-block");
+    const { case: opened } = await openedCase({ slug, category: "terrorism" });
+    for (const action of ["freeze", "block"]) {
+      const response = await act(opened.id, { action, reason: "escalated" });
+      expect(response.status).toBe(200);
+      await response.body?.cancel();
+    }
+    await expect(publicInfo(slug)).resolves.toEqual({
+      pinProtected: false,
+      removed: true,
+      removedAt: expect.any(Number),
+      category: "terrorism",
+    });
+  });
+
+  it("states the category and date publicly, never the operator's reason", async () => {
+    const slug = uniqueSlug("statement");
+    const { case: opened } = await openedCase({ slug, category: "copyright" });
+    const response = await act(opened.id, {
+      action: "block",
+      reason: "rights holder notice from counsel, private",
+    });
+    await response.body?.cancel();
+
+    const raw = await (await SELF.fetch(roomUrl(slug, "?op=info"))).text();
+    expect(raw).not.toContain("private");
+    expect(JSON.parse(raw)).toMatchObject({ category: "copyright" });
+
+    const inspected = await SELF.fetch(adminUrl(`/pads/${slug}`), { headers: ADMIN_HEADERS });
+    const { result } = (await inspected.json()) as ActResponse;
+    expect(result?.blocked).toMatchObject({
+      reason: `case ${opened.id}: rights holder notice from counsel, private`,
+      category: "copyright",
+    });
+  });
+
+  it("disconnects live sockets without changing access", async () => {
+    const slug = uniqueSlug("disconnect");
+    const { case: opened } = await openedCase({ slug, category: "spam" });
+    const socket = await openRoomSocket(slug);
+    try {
+      const closed = closeWithin(socket, 5000);
+      const response = await act(opened.id, { action: "disconnect", reason: "flood" });
+      expect(response.status).toBe(200);
+      const disconnected = (await response.json()) as ActResponse;
+      expect(disconnected.result).toMatchObject({ ok: true, disconnected: 1 });
+      expect(await closed).toBe(4408);
+    } finally {
+      if (socket.readyState < WebSocket.CLOSING) socket.close(1000);
+    }
+
+    await expect(publicInfo(slug)).resolves.toEqual({ pinProtected: false });
+    const again = await openRoomSocket(slug);
+    expect(await closeWithin(again)).toBeNull();
+    again.close(1000);
   });
 });
 

@@ -64,7 +64,7 @@ export class PadRoom extends YServer<Env> {
   });
 
   async onLoad() {
-    await this.persistence.load();
+    await Promise.all([this.persistence.load(), this.capabilities.load()]);
   }
 
   async onSave() {
@@ -123,11 +123,14 @@ export class PadRoom extends YServer<Env> {
     super.onConnect(conn, ctx);
   }
 
-  /** Unauthorized (state not yet set) fails closed; read-only links can't write. */
+  /**
+   * Unauthorized (state not yet set) fails closed; read-only links can't write;
+   * neither can anyone once the size cap or an operator freeze (ADR-0018) holds.
+   */
   isReadOnly(conn: Connection): boolean {
     const state = conn.state as ConnState;
     if (state?.readonly !== false) return true;
-    return this.persistence.isFrozen();
+    return this.persistence.isFrozen() || this.capabilities.isFrozen();
   }
 
   onMessage(conn: Connection, message: string | ArrayBuffer | ArrayBufferView) {

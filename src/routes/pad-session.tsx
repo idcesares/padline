@@ -7,8 +7,9 @@ import { BlockNoteSchema, defaultBlockSpecs } from "@blocknote/core";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/shadcn";
 import "@blocknote/shadcn/style.css";
-import { Eye, Lock, PenLine } from "lucide-react";
+import { Eye, Lock, Pause, PenLine } from "lucide-react";
 import { getIdentity, saveIdentity } from "@/lib/identity";
+import { categoryLabel } from "@/lib/moderation-labels";
 import { usePadStats } from "@/hooks/use-pad-stats";
 import { useStatusLine } from "@/hooks/use-status-line";
 import { StatusLine, SyncDot } from "@/components/status-line";
@@ -47,7 +48,7 @@ const schema = BlockNoteSchema.create({ blockSpecs: textBlockSpecs });
 type AccessState =
   | { kind: "loading" }
   | { kind: "pin" }
-  | { kind: "removed" }
+  | { kind: "removed"; removedAt?: number; category?: string }
   | { kind: "ready"; token?: string; pinProtected: boolean };
 
 const sessionStorageKey = (slug: string) => `padline:token:${slug}`;
@@ -70,6 +71,9 @@ export function PadSession({
       ? { kind: "ready", token: undefined, pinProtected: false }
       : { kind: "loading" },
   );
+  // ADR-0018: an operator freeze. The Room refuses edits either way; this only
+  // keeps the editor from accepting keystrokes it would drop.
+  const [frozen, setFrozen] = useState(false);
 
   useEffect(() => {
     if (readOnlyToken) return;
@@ -78,9 +82,14 @@ export function PadSession({
       .then((info) => {
         if (cancelled) return;
         if (info.removed) {
-          setAccess({ kind: "removed" });
+          setAccess({
+            kind: "removed",
+            removedAt: info.removedAt,
+            category: info.category,
+          });
           return;
         }
+        setFrozen(!!info.frozen);
         if (!info.pinProtected) {
           setAccess({ kind: "ready", token: undefined, pinProtected: false });
           return;
@@ -117,10 +126,38 @@ export function PadSession({
     setAccess({ kind: "pin" });
   };
 
-  const markRemoved = () => setAccess({ kind: "removed" });
+  // Both arrive as a socket close; the statement of reasons comes from info.
+  const markRemoved = () => {
+    setAccess({ kind: "removed" });
+    void fetchPadInfo(slug)
+      .then((info) => {
+        if (info.removed) {
+          setAccess({
+            kind: "removed",
+            removedAt: info.removedAt,
+            category: info.category,
+          });
+        }
+      })
+      .catch(() => {});
+  };
+
+  const refreshFrozen = () => {
+    void fetchPadInfo(slug)
+      .then((info) => setFrozen(!!info.frozen))
+      .catch(() => {});
+  };
 
   if (access.kind === "loading") return <PadSkeleton />;
-  if (access.kind === "removed") return <PadRemoved slug={slug} />;
+  if (access.kind === "removed") {
+    return (
+      <PadRemoved
+        slug={slug}
+        removedAt={access.removedAt}
+        category={access.category}
+      />
+    );
+  }
   if (access.kind === "pin") return <PinPrompt slug={slug} onVerify={grantPin} />;
 
   const changePin = async (pin: string) => {
@@ -151,9 +188,11 @@ export function PadSession({
       token={access.token}
       readOnlyToken={readOnlyToken}
       pinProtected={access.pinProtected}
+      frozen={frozen}
       padUrl={padUrl}
       onSessionRejected={rejectSession}
       onRemoved={markRemoved}
+      onFrozen={refreshFrozen}
       onSetPin={changePin}
       onRemovePin={clearPin}
       onCreateReadOnlyLink={createReadOnlyLink}
@@ -169,9 +208,11 @@ function ActivePadSession({
   token,
   readOnlyToken,
   pinProtected,
+  frozen,
   padUrl,
   onSessionRejected,
   onRemoved,
+  onFrozen,
   onSetPin,
   onRemovePin,
   onCreateReadOnlyLink,
@@ -183,9 +224,11 @@ function ActivePadSession({
   token?: string;
   readOnlyToken?: string;
   pinProtected: boolean;
+  frozen: boolean;
   padUrl: string;
   onSessionRejected: () => void;
   onRemoved: () => void;
+  onFrozen: () => void;
   onSetPin: (pin: string) => Promise<void>;
   onRemovePin: () => Promise<void>;
   onCreateReadOnlyLink: () => Promise<string>;
@@ -254,6 +297,7 @@ function ActivePadSession({
       const code = (event as { code?: number } | null)?.code;
       if (code === 4401 && !readOnly) onSessionRejected();
       if (code === 4404) onRemoved();
+      if (code === 4409) onFrozen();
     };
     provider.on("status", onStatus);
     provider.on("connection-close", onClose as never);
@@ -261,7 +305,7 @@ function ActivePadSession({
       provider.off("status", onStatus);
       provider.off("connection-close", onClose as never);
     };
-  }, [onRemoved, onSessionRejected, provider, readOnly]);
+  }, [onFrozen, onRemoved, onSessionRejected, provider, readOnly]);
 
   const users = useAwarenessUsers(provider);
   const editor = useCreateBlockNote(
@@ -304,6 +348,15 @@ function ActivePadSession({
               View only
             </span>
           )}
+          {frozen && !readOnly && (
+            <span
+              className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+              title="Editing is paused while this pad is reviewed"
+            >
+              <Pause className="size-3" aria-hidden />
+              Editing paused
+            </span>
+          )}
           {!statusLineVisible && (
             <SyncDot status={status} className="mx-1" labelled />
           )}
@@ -313,7 +366,7 @@ function ActivePadSession({
             identity={identity}
             onRename={handleRename}
           />
-          {!readOnly && (
+          {!readOnly && !frozen && (
             <>
               <ShareDialog
                 padUrl={padUrl}
@@ -358,7 +411,11 @@ function ActivePadSession({
             ready ? "opacity-100" : "translate-y-1 opacity-0",
           )}
         >
-          <BlockNoteView editor={editor} theme={theme} editable={!readOnly} />
+          <BlockNoteView
+            editor={editor}
+            theme={theme}
+            editable={!readOnly && !frozen}
+          />
         </div>
       </main>
       {statusLineVisible && (
@@ -444,7 +501,17 @@ function PinPrompt({
   );
 }
 
-function PadRemoved({ slug }: { slug: string }) {
+/** ADR-0018: the statement of reasons is the category and date, nothing more. */
+function PadRemoved({
+  slug,
+  removedAt,
+  category,
+}: {
+  slug: string;
+  removedAt?: number;
+  category?: string;
+}) {
+  const label = categoryLabel(category);
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-3 px-6 text-center">
       <h1 className="text-2xl font-semibold">This pad was removed</h1>
@@ -456,6 +523,17 @@ function PadRemoved({ slug }: { slug: string }) {
         </Link>{" "}
         may be removed.
       </p>
+      {(label || removedAt) && (
+        <p className="text-sm text-muted-foreground">
+          {removedAt &&
+            `Removed on ${new Date(removedAt).toLocaleDateString(undefined, {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            })}. `}
+          {label && `Reason: ${label}.`}
+        </p>
+      )}
       <Link to="/" className="mt-2 underline underline-offset-4">
         Back to Padline
       </Link>

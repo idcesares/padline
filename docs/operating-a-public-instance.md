@@ -71,5 +71,6 @@ Today, instances have the moderation profile and the case ledger of
 ADR-0018: notices are recorded as cases, and every review and takedown
 ([ADR-0010](adr/0010-reactive-takedown-admin-ops.md)'s operations) runs through
 the ledger and its hash-chained action log. The Turnstile-gated report API
-(`POST /api/reports`) files reports as cases; the report form that calls it,
-evidence capture, freeze, and export are decided but not yet implemented.
+(`POST /api/reports`) files reports as cases; a pad can be frozen or
+disconnected; and a removed pad shows its category and date. The report form,
+evidence capture, and export are decided but not yet implemented.

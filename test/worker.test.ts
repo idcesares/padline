@@ -215,6 +215,7 @@ describe("PadRoom HTTP interface", () => {
     await expect(response.json()).resolves.toEqual({
       pinProtected: false,
       removed: true,
+      removedAt: expect.any(Number),
     });
 
     response = await SELF.fetch(roomUrl(slug, "?op=set-pin"), {
@@ -273,6 +274,7 @@ describe("PadRoom HTTP interface", () => {
     await expect(response.json()).resolves.toEqual({
       pinProtected: false,
       removed: true,
+      removedAt: expect.any(Number),
     });
   });
 

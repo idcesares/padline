@@ -271,4 +271,50 @@ test.describe("pad session route", () => {
       await act("close");
     }
   });
+
+  test("pauses editing on a frozen pad and states why a pad was removed", async ({
+    page,
+    request,
+  }) => {
+    test.skip(!adminSecret, "ADMIN_SECRET or .dev.vars is required");
+    const headers = { authorization: `Bearer ${adminSecret}` };
+    const openCase = async (slug: string, category: string) => {
+      const response = await request.post("/api/admin/cases", {
+        headers,
+        data: { slug, kind: "violation", source: "other", category },
+      });
+      expect(response.status()).toBe(201);
+      return ((await response.json()) as { case: { id: number } }).case.id;
+    };
+    const act = (caseId: number, action: string) =>
+      request.post(`/api/admin/cases/${caseId}/actions`, {
+        headers,
+        data: { action, reason: "browser characterization" },
+      });
+
+    const frozenSlug = uniqueSlug("frozen");
+    const removedSlug = uniqueSlug("removed-reason");
+    const frozenCase = await openCase(frozenSlug, "spam");
+    const removedCase = await openCase(removedSlug, "phishing-malware");
+
+    try {
+      await page.goto(`/${frozenSlug}`);
+      await expectConnected(page);
+      expect((await act(frozenCase, "freeze")).ok()).toBeTruthy();
+      await expect(page.getByText("Editing paused")).toBeVisible();
+      await expect(page.locator('[contenteditable="true"]')).toHaveCount(0);
+
+      expect((await act(removedCase, "block")).ok()).toBeTruthy();
+      await page.goto(`/${removedSlug}`);
+      await expect(
+        page.getByRole("heading", { name: "This pad was removed" }),
+      ).toBeVisible();
+      await expect(page.getByText("Reason: Phishing or malware.")).toBeVisible();
+    } finally {
+      await act(frozenCase, "unfreeze");
+      await act(frozenCase, "close");
+      await act(removedCase, "unblock");
+      await act(removedCase, "close");
+    }
+  });
 });
