@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const USAGE = `Usage:
   node scripts/admin.mjs <host> cases [--status open] [--priority grave] [--slug <slug>]
@@ -22,14 +22,44 @@ const USAGE = `Usage:
   node scripts/admin.mjs <host> evidence <id>
   node scripts/admin.mjs <host> evidence <id> download [--out <dir>]
   node scripts/admin.mjs <host> evidence <id> hold|release --reason "..."
+  node scripts/admin.mjs <host> case <id> remove --reason "..." [--legal-basis "..."]
+        (a violation: seal evidence, then purge and block)
+  node scripts/admin.mjs <host> bulk <file> <action> --category <id> --reason "..."
+        [--kind ...] [--source ...] [--legal-basis "..."] [--block] [--without-evidence] [--apply]
+        (one slug or pad URL per line, # comments; a dry run unless --apply)
+  node scripts/admin.mjs <host> stats [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+  node scripts/admin.mjs <host> export reports|cases|actions|evidence [--format json|csv]
+        [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--include-contact]      (to stdout)
   node scripts/admin.mjs <host> pad <slug> info
   node scripts/admin.mjs <host> reconcile
   node scripts/admin.mjs <host> verify-chain
+  node scripts/admin.mjs verify-chain --file <actions-export.json>     (offline)
 
 <host>: padline.page, https://padline.page, or 127.0.0.1:8788
 Categories are the ids in src/lib/moderation-profile.ts.`;
 
-const BOOLEAN_FLAGS = new Set(["block", "help"]);
+const BOOLEAN_FLAGS = new Set([
+  "block",
+  "help",
+  "apply",
+  "without-evidence",
+  "include-contact",
+]);
+
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const BULK_ACTIONS = [
+  "review",
+  "capture",
+  "freeze",
+  "unfreeze",
+  "disconnect",
+  "block",
+  "unblock",
+  "purge",
+  "remove",
+  "dismiss",
+  "close",
+];
 
 function die(message) {
   console.error(message);
@@ -72,10 +102,76 @@ function readDevVar(name) {
   }
 }
 
+/** Same canonical form as actionHash in worker/moderation-ledger.ts. */
+function verifyExportedChain(file) {
+  const exported = JSON.parse(readFileSync(file, "utf8"));
+  const rows = Array.isArray(exported) ? exported : exported.rows;
+  if (!Array.isArray(rows)) die(`${file} is not an actions export.`);
+  let prevHash = rows[0]?.prevHash;
+  for (const [index, row] of rows.entries()) {
+    const canonical = JSON.stringify([
+      row.seq,
+      row.at,
+      row.caseId,
+      row.slug,
+      row.action,
+      row.reason,
+      row.paramsJson,
+      row.outcome,
+      row.prevHash,
+    ]);
+    const hash = createHash("sha256").update(canonical).digest("hex");
+    const contiguous = index === 0 || row.seq === rows[index - 1].seq + 1;
+    if (row.prevHash !== prevHash || hash !== row.hash || !contiguous) {
+      die(`Exported action log BROKEN at seq ${row.seq}.`);
+    }
+    prevHash = row.hash;
+  }
+  console.log(
+    rows.length
+      ? `Exported action log intact: ${rows.length} action(s), seq ${rows[0].seq}–${rows.at(-1).seq}, anchored at ${rows[0].prevHash.slice(0, 12)}…`
+      : "Exported action log is empty.",
+  );
+}
+
+/** A slug, `/slug`, or full pad URL — the same reading the report form uses. */
+function padSlug(pad) {
+  const trimmed = pad.trim();
+  if (!/[/.]/.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return trimmed.slice(1).split(/[/?#]/)[0];
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    return decodeURIComponent(url.pathname.split("/")[1] ?? "");
+  } catch {
+    return trimmed;
+  }
+}
+
+/** A --to date without a time includes that whole day. */
+function dateBound(value, isEnd) {
+  if (value === undefined) return undefined;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) die(`Not a date: ${value}`);
+  return isEnd && /^\d{4}-\d{2}-\d{2}$/.test(value) ? ms + 86_400_000 : ms;
+}
+
+function duration(ms) {
+  if (ms === null || ms === undefined) return "—";
+  const minutes = ms / 60_000;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  const hours = minutes / 60;
+  return hours < 48 ? `${hours.toFixed(1)} h` : `${(hours / 24).toFixed(1)} d`;
+}
+
 const { positional, flags } = parseArgs(process.argv.slice(2));
 const [host, command, ...rest] = positional;
 if (flags.help) {
   console.log(USAGE);
+  process.exit(0);
+}
+// Offline: checks an exported action log without contacting any host.
+if (host === "verify-chain" && typeof flags.file === "string") {
+  verifyExportedChain(flags.file);
   process.exit(0);
 }
 if (!host || !command) die(USAGE);
@@ -230,12 +326,15 @@ switch (command) {
           action: verb,
           reason: flags.reason,
           legalBasis: flags["legal-basis"],
-          ...(verb === "purge" ? { block: flags.block === true } : {}),
+          ...(verb === "purge"
+            ? { block: flags.block === true, withoutEvidence: flags["without-evidence"] === true }
+            : {}),
         },
       }),
     );
     if (verb === "review") printReview(data.result);
     else if (verb === "capture") printEvidence(data.result.evidence);
+    else if (verb === "remove") printEvidence(data.evidence);
     else if (data.result) console.log(JSON.stringify(data.result, null, 2));
     console.log();
     printCase(data.case);
@@ -290,6 +389,142 @@ switch (command) {
     }
 
     die(USAGE);
+  }
+
+  case "bulk": {
+    const [file, action] = rest;
+    if (!file || !BULK_ACTIONS.includes(action)) die(USAGE);
+    if (!flags.category) die("--category is required: it files each pad's case.");
+    if (action !== "review" && action !== "capture" && !flags.reason) {
+      die(`--reason is required for bulk ${action}.`);
+    }
+    const kind = flags.kind ?? "violation";
+    const pads = readFileSync(file, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.replace(/#.*/, "").trim())
+      .filter(Boolean);
+
+    const results = [];
+    for (const pad of pads) {
+      const slug = padSlug(pad);
+      if (!SLUG_PATTERN.test(slug)) {
+        results.push({ slug: pad, caseId: "—", outcome: "failed: invalid slug" });
+        continue;
+      }
+      if (!flags.apply) {
+        const { cases } = expectOk(await call(`/cases?slug=${encodeURIComponent(slug)}`));
+        const open = cases.find(
+          (entry) => entry.kind === kind && !["dismissed", "closed"].includes(entry.status),
+        );
+        results.push({
+          slug,
+          caseId: open ? `#${open.id}` : "new case",
+          outcome: `would ${action}`,
+        });
+        continue;
+      }
+      const opened = await call("/cases", {
+        method: "POST",
+        body: {
+          slug,
+          kind,
+          category: flags.category,
+          source: flags.source ?? "other",
+          description: `bulk ${action} from ${basename(file)}`,
+        },
+      });
+      if (!opened.res.ok) {
+        results.push({ slug, caseId: "—", outcome: `failed: ${opened.data?.error ?? opened.res.status}` });
+        continue;
+      }
+      const caseId = opened.data.case.id;
+      const acted = await call(`/cases/${caseId}/actions`, {
+        method: "POST",
+        body: {
+          action,
+          reason: flags.reason,
+          legalBasis: flags["legal-basis"],
+          ...(action === "purge"
+            ? { block: flags.block === true, withoutEvidence: flags["without-evidence"] === true }
+            : {}),
+        },
+      });
+      results.push({
+        slug,
+        caseId: `#${caseId}`,
+        outcome: acted.res.ok
+          ? "ok"
+          : `failed: ${acted.data?.error ?? acted.res.status}${acted.data?.detail ? ` (${acted.data.detail})` : ""}`,
+      });
+    }
+
+    for (const result of results) {
+      console.log([result.caseId, result.outcome, `/${result.slug}`].join("\t"));
+    }
+    const failed = results.filter((result) => result.outcome.startsWith("failed"));
+    if (!flags.apply) {
+      console.log(`\nDry run: nothing changed. Re-run with --apply to act on ${pads.length} pad(s).`);
+    } else {
+      console.log(`\n${results.length - failed.length} ok, ${failed.length} failed.`);
+    }
+    if (failed.length) process.exit(1);
+    break;
+  }
+
+  case "stats": {
+    const query = new URLSearchParams();
+    const from = dateBound(flags.from, false);
+    const to = dateBound(flags.to, true);
+    if (from !== undefined) query.set("from", String(from));
+    if (to !== undefined) query.set("to", String(to));
+    const stats = expectOk(await call(`/stats${query.size ? `?${query}` : ""}`));
+    const counts = (label, tally) =>
+      console.log(
+        `  ${label}: ${Object.entries(tally).map(([key, n]) => `${key} ${n}`).join(", ") || "none"}`,
+      );
+
+    console.log(`Window: ${flags.from ?? "the beginning"} → ${flags.to ?? "now"}`);
+    console.log(`\nNotices: ${stats.reports.total}`);
+    counts("by category", stats.reports.byCategory);
+    counts("by source", stats.reports.bySource);
+    console.log(`\nCases: ${stats.cases.total}`);
+    counts("by status", stats.cases.byStatus);
+    counts("by priority", stats.cases.byPriority);
+    counts("by kind", stats.cases.byKind);
+    console.log("\nActions");
+    counts("done", stats.actions.ok);
+    counts("failed", stats.actions.failed);
+    console.log(
+      `\nEvidence: ${stats.evidence.captured} captured, ${stats.evidence.expired} expired, ${stats.evidence.onHold} on hold now`,
+    );
+    for (const priority of ["grave", "standard"]) {
+      const { targetHours, firstReview, action } = stats.timing[priority];
+      const describe = (label, measured) =>
+        console.log(
+          `  ${label}: ${measured.count} case(s), median ${duration(measured.medianMs)}, p90 ${duration(measured.p90Ms)}, within target ${measured.withinTarget === null ? "—" : `${Math.round(measured.withinTarget * 100)}%`}`,
+        );
+      console.log(`\n${priority} (target ${targetHours} h)`);
+      describe("first review", firstReview);
+      describe("action", action);
+    }
+    break;
+  }
+
+  case "export": {
+    const [table] = rest;
+    if (!["reports", "cases", "actions", "evidence"].includes(table)) die(USAGE);
+    const query = new URLSearchParams({ format: flags.format ?? "json" });
+    const from = dateBound(flags.from, false);
+    const to = dateBound(flags.to, true);
+    if (from !== undefined) query.set("from", String(from));
+    if (to !== undefined) query.set("to", String(to));
+    if (flags["include-contact"]) query.set("includeContact", "1");
+    const res = await fetch(`${origin}/api/admin/export/${table}?${query}`, {
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    if (!res.ok) die(`HTTP ${res.status}: ${await res.text()}`);
+    process.stdout.write(await res.text());
+    break;
   }
 
   case "pad": {
