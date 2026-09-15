@@ -318,6 +318,27 @@ if (adminSecret && !noAdmin) {
     data.actions?.map((action) => action.outcome).join() === "pending,ok",
   );
 
+  res = await act("capture");
+  data = await res.json().catch(() => ({}));
+  const evidence = data.result?.evidence;
+  check(
+    "capture: evidence sealed with a SHA-256",
+    res.ok && evidence?.docBytes > 0 && /^[0-9a-f]{64}$/.test(evidence?.docSha256 ?? ""),
+    JSON.stringify(evidence ?? data),
+  );
+  if (evidence) {
+    const { createHash } = await import("node:crypto");
+    res = await ledger(`/evidence/${evidence.id}/download`);
+    data = await res.json().catch(() => ({}));
+    const docSha = data.doc
+      ? createHash("sha256").update(Buffer.from(data.doc, "base64")).digest("hex")
+      : "";
+    check(
+      "evidence: download matches its sealed hash",
+      res.ok && docSha === evidence.docSha256 && data.text?.includes("REPORTED-CONTENT-SMOKE"),
+    );
+  }
+
   res = await act("freeze", { reason: "api-smoke" });
   check("freeze: accepted", res.ok, `status=${res.status}`);
   res = await fetch(`${adminBase}?op=info`);

@@ -1,5 +1,6 @@
 import type { Connection } from "partyserver";
 import { isReportCategory } from "../src/lib/moderation-profile";
+import { toBase64 } from "./bytes";
 import type { RoomPersistence } from "./room-persistence";
 import type { RoomSecurity } from "./room-security";
 
@@ -249,6 +250,26 @@ export class RoomCapabilities {
         frozen: this.frozen,
         liveConnections: [...this.context.connections()].length,
         ...persisted,
+      });
+    }
+
+    // ADR-0018: the whole persisted document, for the ledger to seal. Like
+    // admin-info it reads through a PIN: evidence cannot be locked away.
+    if (op === "admin-evidence" && request.method === "GET") {
+      const [pinProtected, blocked, evidence] = await Promise.all([
+        this.context.security.isPinProtected(),
+        this.context.storage.get<BlockRecord>("blocked"),
+        this.context.persistence.evidence(),
+      ]);
+      const { doc, ...persisted } = evidence;
+      return Response.json({
+        slug: this.context.roomName,
+        pinProtected,
+        blocked: blocked ?? null,
+        frozen: this.frozen,
+        liveConnections: [...this.context.connections()].length,
+        ...persisted,
+        doc: doc ? toBase64(doc) : null,
       });
     }
 

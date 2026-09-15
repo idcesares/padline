@@ -2,9 +2,10 @@
 
 **Status:** accepted (2026-09-13) — phase 1 in progress: the moderation
 profile, the ledger, the recorded takedown path (room admin operations closed
-on the public route), the Turnstile-gated report API, freeze, disconnect, and
-the statement of reasons on removed pads are implemented; the report form,
-operator notification, evidence capture, bulk actions, and export are not yet.
+on the public route), the Turnstile-gated report API, freeze, disconnect, the
+statement of reasons on removed pads, and evidence capture with retention and
+holds are implemented; the report form, operator notification, `remove`, bulk
+actions, and export are not yet.
 
 Partially supersedes ADR-0010 (the rejection of an in-app report flow and of
 any central moderation store, and the directly reachable `op=admin-*` surface).

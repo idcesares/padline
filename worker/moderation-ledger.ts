@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Hono } from "hono";
 import {
+  MODERATION_PROFILE,
   isReportCategory,
   priorityOf,
   type CasePriority,
@@ -8,6 +9,7 @@ import {
 } from "../src/lib/moderation-profile";
 import { isValidSlug } from "../src/lib/slug";
 import { isAdminRequest } from "./admin-auth";
+import { fromBase64, sha256Hex, toBase64 } from "./bytes";
 import type { PadRoom } from "./index";
 
 type LedgerEnv = {
@@ -81,6 +83,24 @@ export type ActionRecord = {
   hash: string;
 };
 
+/** A sealed capture of a pad's persisted document (ADR-0018). */
+export type EvidenceRecord = {
+  id: number;
+  caseId: number;
+  slug: string;
+  capturedAt: number;
+  docBytes: number;
+  docSha256: string;
+  textBytes: number;
+  textSha256: string;
+  /** Room state at capture: PIN, block, freeze, snapshots — never content. */
+  meta: Record<string, unknown>;
+  /** Null while the case is open; set when it closes. */
+  retainUntil: number | null;
+  hold: boolean;
+  deletedAt: number | null;
+};
+
 /** What the Worker passes on from the public report form. */
 export type ReportInput = {
   pad?: string;
@@ -115,11 +135,16 @@ type Row = Record<string, SqlStorageValue>;
 const DESCRIPTION_MAX = 2000;
 const CONTACT_MAX = 254;
 const REASON_MAX = 500;
+/** Under Durable Object SQLite's 2 MB BLOB limit, which the document cap equals. */
+const EVIDENCE_CHUNK_BYTES = 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RETENTION_SWEEP_MS = DAY_MS;
 const GENESIS_HASH = "0".repeat(64);
 const CLOSED_STATUSES: CaseStatus[] = ["dismissed", "closed"];
 
 export const CASE_ACTIONS = [
   "review",
+  "capture",
   "freeze",
   "unfreeze",
   "disconnect",
@@ -163,13 +188,7 @@ export async function actionHash(
     row.outcome,
     row.prevHash,
   ]);
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(canonical),
-  );
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(new TextEncoder().encode(canonical));
 }
 
 /**
@@ -217,6 +236,27 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       source TEXT NOT NULL,
       case_id INTEGER NOT NULL,
       reference TEXT
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS evidence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      case_id INTEGER NOT NULL,
+      slug TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      doc_bytes INTEGER NOT NULL,
+      doc_sha256 TEXT NOT NULL,
+      text_bytes INTEGER NOT NULL,
+      text_sha256 TEXT NOT NULL,
+      meta_json TEXT NOT NULL,
+      retain_until INTEGER,
+      hold INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS evidence_chunks (
+      evidence_id INTEGER NOT NULL,
+      part TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      PRIMARY KEY (evidence_id, part, idx)
     )`);
     // A ledger created before references existed gains the column in place.
     const reportColumns = this.sql
@@ -272,6 +312,28 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       : outcome;
   }
 
+  /**
+   * ADR-0018 retention: evidence is deleted once its case has been closed for
+   * the profile's retention period unless it is on hold, and reporter contact
+   * is cleared on the same kind of schedule. Each deletion is a logged action.
+   */
+  async alarm(): Promise<void> {
+    await this.sweepRetention(Date.now());
+    const pending = this.sql
+      .exec(
+        `SELECT
+           (SELECT COUNT(*) FROM evidence
+            WHERE deleted_at IS NULL AND retain_until IS NOT NULL)
+         + (SELECT COUNT(*) FROM reports JOIN cases ON cases.id = reports.case_id
+            WHERE reports.contact IS NOT NULL AND cases.closed_at IS NOT NULL)
+         AS n`,
+      )
+      .one().n as number;
+    if (pending > 0) {
+      await this.ctx.storage.setAlarm(Date.now() + RETENTION_SWEEP_MS);
+    }
+  }
+
   private routes(): Hono {
     const app = new Hono().basePath("/api/admin");
 
@@ -301,6 +363,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       return Response.json({
         case: found,
         reports: this.reportsFor(id),
+        evidence: this.evidenceFor(id),
         actions: this.actionsFor(id),
       });
     });
@@ -333,6 +396,57 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       return Response.json(outcome.body, { status: outcome.status });
     });
 
+    app.get("/evidence/:id", (c) => {
+      const evidence = this.evidenceById(Number(c.req.param("id")));
+      if (!evidence) return Response.json({ error: "not-found" }, { status: 404 });
+      return Response.json({ evidence });
+    });
+
+    // Recorded before any content leaves the ledger.
+    app.get("/evidence/:id/download", async (c) => {
+      const evidence = this.evidenceById(Number(c.req.param("id")));
+      if (!evidence) return Response.json({ error: "not-found" }, { status: 404 });
+      if (evidence.deletedAt !== null) {
+        return Response.json({ error: "evidence-expired" }, { status: 410 });
+      }
+      await this.append({
+        caseId: evidence.caseId,
+        slug: evidence.slug,
+        action: "evidence-download",
+        params: { evidenceId: evidence.id },
+      });
+      return Response.json({
+        evidence,
+        doc: toBase64(this.readChunks(evidence.id, "doc")),
+        text: new TextDecoder().decode(this.readChunks(evidence.id, "text")),
+      });
+    });
+
+    app.post("/evidence/:id/:change{hold|release}", async (c) => {
+      const evidence = this.evidenceById(Number(c.req.param("id")));
+      if (!evidence) return Response.json({ error: "not-found" }, { status: 404 });
+      if (evidence.deletedAt !== null) {
+        return Response.json({ error: "evidence-expired" }, { status: 410 });
+      }
+      const body = (await readJson(c.req.raw)) ?? {};
+      const reason = optionalText(body.reason, REASON_MAX);
+      if (!reason) return Response.json({ error: "reason-required" }, { status: 400 });
+      const change = c.req.param("change");
+      this.sql.exec(
+        "UPDATE evidence SET hold = ? WHERE id = ?",
+        change === "hold" ? 1 : 0,
+        evidence.id,
+      );
+      const record = await this.append({
+        caseId: evidence.caseId,
+        slug: evidence.slug,
+        action: `evidence-${change}`,
+        reason,
+        params: { evidenceId: evidence.id },
+      });
+      return Response.json({ evidence: this.evidenceById(evidence.id), actions: [record] });
+    });
+
     app.post("/reconcile", async () => Response.json(await this.reconcile()));
 
     app.notFound(() => unknownOperation());
@@ -359,7 +473,14 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     const legalBasis = optionalText(body.legalBasis, REASON_MAX);
     if (reason === undefined) return refusal(400, "invalid-reason");
     if (legalBasis === undefined) return refusal(400, "invalid-legal-basis");
-    if (action !== "review" && !reason) return refusal(400, "reason-required");
+    // Looking — a review or a capture — needs no reason; every decision does.
+    if (action !== "review" && action !== "capture" && !reason) {
+      return refusal(400, "reason-required");
+    }
+    // Keeping a copy would defeat a request to remove one's own content.
+    if (action === "capture" && found.kind === "removal-request") {
+      return refusal(409, "capture-not-allowed");
+    }
 
     if (action === "dismiss" || action === "close") {
       const record = await this.append({
@@ -379,6 +500,13 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
         legalBasis,
         found.id,
       );
+      // Retention starts when the case closes: open cases keep their evidence.
+      this.sql.exec(
+        "UPDATE evidence SET retain_until = ? WHERE case_id = ? AND retain_until IS NULL",
+        record.at + MODERATION_PROFILE.evidenceRetentionDays * DAY_MS,
+        found.id,
+      );
+      await this.ensureRetentionAlarm();
       return {
         status: 200,
         body: { case: this.caseById(found.id), actions: [record] },
@@ -409,29 +537,196 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
    */
   private async runRoomAction(entry: RoomActionEntry): Promise<ActOutcome> {
     const intent = await this.append({ ...entry, outcome: "pending" });
-    const result = await this.callRoomFor(entry);
+    const settled = await this.performRoomAction(entry);
     const outcome = await this.append({
       caseId: entry.caseId,
       slug: entry.slug,
       action: entry.action,
-      outcome: result.ok ? "ok" : "failed",
-      params: result.ok
-        ? { intent: intent.seq, result: summarize(result.data) }
-        : { intent: intent.seq, error: result.error, status: result.status },
+      outcome: settled.ok ? "ok" : "failed",
+      params: settled.ok
+        ? { intent: intent.seq, result: settled.logged }
+        : { intent: intent.seq, error: settled.error, status: settled.status },
     });
-    if (result.ok) {
+    if (settled.ok) {
       this.applyToCase(entry.caseId, entry.action, outcome.at, entry.params);
     }
     return {
-      status: result.ok ? 200 : 502,
+      status: settled.ok ? 200 : 502,
       body: {
         ...(entry.caseId === null ? {} : { case: this.caseById(entry.caseId) }),
         actions: [intent, outcome],
-        ...(result.ok
-          ? { result: result.data }
-          : { error: "room-failed", detail: result.error }),
+        ...(settled.ok
+          ? { result: settled.returned }
+          : { error: "room-failed", detail: settled.error }),
       },
     };
+  }
+
+  /** What the operator gets back, and the content-free part the log keeps. */
+  private async performRoomAction(
+    entry: RoomActionEntry,
+  ): Promise<
+    | { ok: true; returned: Record<string, unknown>; logged: Record<string, unknown> }
+    | { ok: false; status: number; error: string }
+  > {
+    const result = await this.callRoomFor(entry);
+    if (!result.ok) return result;
+    if (entry.action !== "capture" || entry.caseId === null) {
+      return { ok: true, returned: result.data, logged: summarize(result.data) };
+    }
+    const evidence = await this.sealEvidence(entry.caseId, entry.slug, result.data);
+    if (!evidence) return { ok: false, status: 0, error: "evidence-unreadable" };
+    return {
+      ok: true,
+      returned: { evidence },
+      logged: {
+        evidenceId: evidence.id,
+        docBytes: evidence.docBytes,
+        docSha256: evidence.docSha256,
+        textBytes: evidence.textBytes,
+        textSha256: evidence.textSha256,
+      },
+    };
+  }
+
+  /**
+   * Seals a capture: the document and its text rendering are hashed, split
+   * into chunks under the BLOB limit, and written in one transaction with
+   * their record, so evidence is never half-stored.
+   */
+  private async sealEvidence(
+    caseId: number,
+    slug: string,
+    data: Record<string, unknown>,
+  ): Promise<EvidenceRecord | null> {
+    const { doc, text, ...meta } = data;
+    if (typeof text !== "string" || (doc !== null && typeof doc !== "string")) {
+      return null;
+    }
+    const docBytes = doc ? fromBase64(doc) : new Uint8Array();
+    const textBytes = new TextEncoder().encode(text);
+    const [docSha256, textSha256] = await Promise.all([
+      sha256Hex(docBytes),
+      sha256Hex(textBytes),
+    ]);
+    const id = this.ctx.storage.transactionSync(() => {
+      const evidenceId = this.sql
+        .exec(
+          `INSERT INTO evidence
+             (case_id, slug, captured_at, doc_bytes, doc_sha256, text_bytes, text_sha256, meta_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          caseId,
+          slug,
+          Date.now(),
+          docBytes.byteLength,
+          docSha256,
+          textBytes.byteLength,
+          textSha256,
+          JSON.stringify(meta),
+        )
+        .one().id as number;
+      this.writeChunks(evidenceId, "doc", docBytes);
+      this.writeChunks(evidenceId, "text", textBytes);
+      return evidenceId;
+    });
+    return this.evidenceById(id);
+  }
+
+  private writeChunks(evidenceId: number, part: string, bytes: Uint8Array): void {
+    for (
+      let offset = 0, index = 0;
+      offset < bytes.byteLength;
+      offset += EVIDENCE_CHUNK_BYTES, index++
+    ) {
+      this.sql.exec(
+        "INSERT INTO evidence_chunks (evidence_id, part, idx, data) VALUES (?, ?, ?, ?)",
+        evidenceId,
+        part,
+        index,
+        bytes.slice(offset, offset + EVIDENCE_CHUNK_BYTES).buffer,
+      );
+    }
+  }
+
+  private readChunks(evidenceId: number, part: string): Uint8Array {
+    const chunks = this.sql
+      .exec(
+        "SELECT data FROM evidence_chunks WHERE evidence_id = ? AND part = ? ORDER BY idx",
+        evidenceId,
+        part,
+      )
+      .toArray()
+      .map((row) => new Uint8Array(row.data as ArrayBuffer));
+    const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  }
+
+  private evidenceById(id: number): EvidenceRecord | null {
+    if (!Number.isInteger(id)) return null;
+    const row = this.sql.exec("SELECT * FROM evidence WHERE id = ?", id).toArray()[0];
+    return row ? toEvidence(row) : null;
+  }
+
+  private evidenceFor(caseId: number): EvidenceRecord[] {
+    return this.sql
+      .exec("SELECT * FROM evidence WHERE case_id = ? ORDER BY id", caseId)
+      .toArray()
+      .map(toEvidence);
+  }
+
+  private async ensureRetentionAlarm(): Promise<void> {
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RETENTION_SWEEP_MS);
+    }
+  }
+
+  private async sweepRetention(now: number): Promise<void> {
+    const expired = this.sql
+      .exec(
+        `SELECT id, case_id, slug FROM evidence
+         WHERE deleted_at IS NULL AND hold = 0
+           AND retain_until IS NOT NULL AND retain_until <= ?`,
+        now,
+      )
+      .toArray();
+    for (const row of expired) {
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec("DELETE FROM evidence_chunks WHERE evidence_id = ?", row.id);
+        this.sql.exec("UPDATE evidence SET deleted_at = ? WHERE id = ?", now, row.id);
+      });
+      await this.append({
+        caseId: row.case_id as number,
+        slug: row.slug as string,
+        action: "evidence-expired",
+        params: { evidenceId: row.id },
+      });
+    }
+
+    const contactCutoff =
+      now - MODERATION_PROFILE.reporterContactRetentionDays * DAY_MS;
+    const contacts = this.sql
+      .exec(
+        `SELECT reports.id, reports.case_id, reports.slug
+         FROM reports JOIN cases ON cases.id = reports.case_id
+         WHERE reports.contact IS NOT NULL
+           AND cases.closed_at IS NOT NULL AND cases.closed_at <= ?`,
+        contactCutoff,
+      )
+      .toArray();
+    for (const row of contacts) {
+      this.sql.exec("UPDATE reports SET contact = NULL WHERE id = ?", row.id);
+      await this.append({
+        caseId: row.case_id as number,
+        slug: row.slug as string,
+        action: "contact-expired",
+        params: { reportId: row.id },
+      });
+    }
   }
 
   private callRoomFor(entry: RoomActionEntry): Promise<RoomResult> {
@@ -441,6 +736,8 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     switch (entry.action) {
       case "review":
         return this.callRoom(entry.slug, "admin-info", "GET");
+      case "capture":
+        return this.callRoom(entry.slug, "admin-evidence", "GET");
       case "freeze":
         return this.callRoom(entry.slug, "admin-freeze", "POST", { reason: note, category });
       case "unfreeze":
@@ -467,7 +764,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     params: Record<string, unknown> | undefined,
   ): void {
     if (caseId === null) return;
-    if (action === "review") {
+    if (action === "review" || action === "capture") {
       this.sql.exec(
         `UPDATE cases SET first_reviewed_at = COALESCE(first_reviewed_at, ?),
            status = CASE status WHEN 'open' THEN 'reviewing' ELSE status END
@@ -861,6 +1158,23 @@ function slugFromPad(pad: string | undefined): string | undefined {
   } catch {
     return trimmed;
   }
+}
+
+function toEvidence(row: Row): EvidenceRecord {
+  return {
+    id: row.id as number,
+    caseId: row.case_id as number,
+    slug: row.slug as string,
+    capturedAt: row.captured_at as number,
+    docBytes: row.doc_bytes as number,
+    docSha256: row.doc_sha256 as string,
+    textBytes: row.text_bytes as number,
+    textSha256: row.text_sha256 as string,
+    meta: JSON.parse(row.meta_json as string) as Record<string, unknown>,
+    retainUntil: row.retain_until as number | null,
+    hold: row.hold === 1,
+    deletedAt: row.deleted_at as number | null,
+  };
 }
 
 /** Content never enters the action log; only its size does. */

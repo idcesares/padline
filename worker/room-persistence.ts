@@ -131,6 +131,16 @@ export class RoomPersistence {
    * and therefore remains available through a visitor-facing PIN.
    */
   async inspect(textLimit: number): Promise<PersistedPadInfo> {
+    const { doc: _doc, text, ...info } = await this.evidence();
+    return { ...info, text: text.slice(0, textLimit) };
+  }
+
+  /**
+   * ADR-0018: the persisted document itself, with its full text rendering, for
+   * the moderation ledger to seal as evidence. Same persisted source as
+   * inspect, so evidence and review never disagree.
+   */
+  async evidence(): Promise<PersistedPadInfo & { doc: Uint8Array | null }> {
     const [stored, lastSnapshotAt] = await Promise.all([
       this.context.storage.get<Uint8Array>(DOC_KEY),
       this.context.storage.get<number>(LAST_SNAPSHOT_AT_KEY),
@@ -148,7 +158,8 @@ export class RoomPersistence {
       docBytes: stored?.byteLength ?? 0,
       snapshots,
       lastSnapshotAt: lastSnapshotAt ?? null,
-      text: text.slice(0, textLimit),
+      text,
+      doc: stored ? new Uint8Array(stored) : null,
     };
   }
 
