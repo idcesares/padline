@@ -13,6 +13,7 @@ import {
 } from "../src/lib/moderation-profile";
 import type { ModerationLedger, PadRoom } from "../worker";
 import { isAdminRequest } from "../worker/admin-auth";
+import { actionHash } from "../worker/moderation-ledger";
 import type {
   ActionRecord,
   CaseRecord,
@@ -370,6 +371,7 @@ describe("Moderation ledger takedowns", () => {
       action: "purge",
       reason: "confirmed phishing",
       block: true,
+      withoutEvidence: true,
     });
     expect(response.status).toBe(200);
     await response.body?.cancel();
@@ -799,6 +801,209 @@ describe("Evidence", () => {
     await expect(adminGet<ChainVerification>("/actions/verify")).resolves.toMatchObject({
       ok: true,
     });
+  });
+});
+
+describe("Remove", () => {
+  it("removes a violating pad: evidence first, then purge and block in one step", async () => {
+    const slug = uniqueSlug("remove");
+    await writePad(slug, "a credential harvesting form");
+    const { case: opened } = await openedCase({ slug, category: "phishing-malware" });
+
+    const response = await act(opened.id, {
+      action: "remove",
+      reason: "confirmed phishing",
+      legalBasis: "Content Policy: phishing",
+    });
+    expect(response.status).toBe(200);
+    const removed = (await response.json()) as ActResponse & { evidence: EvidenceRecord };
+
+    expect(removed.actions.map((entry) => `${entry.action}:${entry.outcome}`)).toEqual([
+      "capture:pending",
+      "capture:ok",
+      "purge:pending",
+      "purge:ok",
+    ]);
+    expect(removed.evidence.docBytes).toBeGreaterThan(0);
+    expect(removed.case).toMatchObject({
+      status: "actioned",
+      legalBasis: "Content Policy: phishing",
+    });
+    await expect(publicInfo(slug)).resolves.toMatchObject({
+      removed: true,
+      category: "phishing-malware",
+    });
+
+    const inspected = await SELF.fetch(adminUrl(`/pads/${slug}`), { headers: ADMIN_HEADERS });
+    const { result } = (await inspected.json()) as ActResponse;
+    expect(result).toMatchObject({ docBytes: 0, snapshots: 0 });
+
+    const download = await SELF.fetch(
+      adminUrl(`/evidence/${removed.evidence.id}/download`),
+      { headers: ADMIN_HEADERS },
+    );
+    const bundle = (await download.json()) as EvidenceBundle;
+    expect(bundle.text).toContain("a credential harvesting form");
+  });
+
+  it("refuses to purge a violation without evidence unless told to", async () => {
+    const violation = await openedCase({ slug: uniqueSlug("purge-evidence"), category: "spam" });
+    let response = await act(violation.case.id, { action: "purge", reason: "spam" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "evidence-required" });
+
+    response = await act(violation.case.id, {
+      action: "purge",
+      reason: "spam",
+      withoutEvidence: true,
+    });
+    expect(response.status).toBe(200);
+    const purged = (await response.json()) as ActResponse;
+    expect(JSON.parse(purged.actions[0].paramsJson)).toMatchObject({ withoutEvidence: true });
+
+    const removal = await openedCase({
+      slug: uniqueSlug("purge-removal"),
+      kind: "removal-request",
+      category: "privacy",
+    });
+    response = await act(removal.case.id, { action: "remove", reason: "their own pad" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "remove-not-allowed" });
+    response = await act(removal.case.id, { action: "purge", reason: "their own pad" });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+});
+
+type Timing = {
+  count: number;
+  medianMs: number | null;
+  p90Ms: number | null;
+  withinTarget: number | null;
+};
+type Stats = {
+  reports: { total: number; byCategory: Record<string, number>; bySource: Record<string, number> };
+  cases: {
+    total: number;
+    byStatus: Record<string, number>;
+    byPriority: Record<string, number>;
+    byKind: Record<string, number>;
+  };
+  actions: { ok: Record<string, number>; failed: Record<string, number> };
+  evidence: { captured: number; expired: number; onHold: number };
+  timing: Record<"grave" | "standard", { targetHours: number; firstReview: Timing; action: Timing }>;
+};
+
+describe("Totals and export", () => {
+  it("counts notices, cases, actions, and review times within a window", async () => {
+    const grave = await openedCase({ slug: uniqueSlug("stats-grave"), category: "terrorism" });
+    await openedCase({ slug: grave.case.slug, category: "spam", source: "cloudflare" });
+    const standard = await openedCase({ slug: uniqueSlug("stats-standard"), category: "copyright" });
+
+    for (const [caseId, body] of [
+      [grave.case.id, { action: "review" }],
+      [grave.case.id, { action: "block", reason: "stats" }],
+      [standard.case.id, { action: "dismiss", reason: "stats" }],
+    ] as const) {
+      const response = await act(caseId, body);
+      expect(response.status).toBe(200);
+      await response.body?.cancel();
+    }
+
+    const stats = await adminGet<Stats>(`/stats?from=${grave.case.openedAt}`);
+    expect(stats.reports).toEqual({
+      total: 3,
+      byCategory: { terrorism: 1, spam: 1, copyright: 1 },
+      bySource: { email: 2, cloudflare: 1 },
+    });
+    expect(stats.cases).toEqual({
+      total: 2,
+      byStatus: { actioned: 1, dismissed: 1 },
+      byPriority: { grave: 1, standard: 1 },
+      byKind: { violation: 2 },
+    });
+    expect(stats.actions.ok).toEqual({
+      "case-opened": 2,
+      "notice-attached": 1,
+      review: 1,
+      block: 1,
+      dismiss: 1,
+    });
+    expect(stats.timing.grave).toMatchObject({
+      targetHours: MODERATION_PROFILE.reviewTargetHours.grave,
+      firstReview: { count: 1, withinTarget: 1 },
+      action: { count: 1, withinTarget: 1 },
+    });
+    expect(stats.timing.standard.firstReview).toEqual({
+      count: 0,
+      medianMs: null,
+      p90Ms: null,
+      withinTarget: null,
+    });
+
+    const response = await SELF.fetch(adminUrl("/stats?from=later"), { headers: ADMIN_HEADERS });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid-range" });
+  });
+
+  it("exports JSON and spreadsheet-safe CSV, withholding contact unless asked, and logs it", async () => {
+    const slug = uniqueSlug("export");
+    const description = '=HYPERLINK("http://example.test"), "quoted"\nsecond line';
+    const opened = await openedCase({
+      slug,
+      category: "other",
+      description,
+      contact: "reporter@example.com",
+    });
+    const from = opened.case.openedAt;
+    const exportOf = (query: string) =>
+      SELF.fetch(adminUrl(`/export/${query}`), { headers: ADMIN_HEADERS });
+
+    let response = await exportOf(`reports?from=${from}`);
+    let { rows } = (await response.json()) as { rows: Array<Record<string, unknown>> };
+    const withheld = rows.filter((row) => row.slug === slug);
+    expect(withheld).toHaveLength(1);
+    expect(withheld[0]).not.toHaveProperty("contact");
+    expect(withheld[0].description).toBe(description);
+
+    response = await exportOf(`reports?from=${from}&includeContact=1`);
+    ({ rows } = (await response.json()) as { rows: Array<Record<string, unknown>> });
+    expect(rows.find((row) => row.slug === slug)?.contact).toBe("reporter@example.com");
+
+    response = await exportOf(`reports?format=csv&from=${from}`);
+    expect(response.headers.get("content-type")).toContain("text/csv");
+    const csv = await response.text();
+    expect(csv.split("\r\n")[0]).toBe(
+      "id,reference,receivedAt,slug,category,description,source,caseId",
+    );
+    expect(csv).toContain(
+      `"'=HYPERLINK(""http://example.test""), ""quoted""\nsecond line"`,
+    );
+    expect(csv).not.toContain("reporter@example.com");
+
+    response = await exportOf(`actions?from=${from}`);
+    const actions = ((await response.json()) as { rows: ActionRecord[] }).rows;
+    expect(actions.filter((row) => row.action === "export")).toHaveLength(3);
+    const verify = async (chain: ActionRecord[]) => {
+      let prevHash = chain[0].prevHash;
+      for (const row of chain) {
+        const { hash, ...unsigned } = row;
+        if (row.prevHash !== prevHash || (await actionHash(unsigned)) !== hash) return false;
+        prevHash = hash;
+      }
+      return true;
+    };
+    expect(await verify(actions)).toBe(true);
+    expect(
+      await verify(actions.map((row, index) => (index === 0 ? { ...row, reason: "edited" } : row))),
+    ).toBe(false);
+
+    response = await exportOf("reports?format=xml");
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid-format" });
+    response = await exportOf("secrets");
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "unknown-op" });
   });
 });
 

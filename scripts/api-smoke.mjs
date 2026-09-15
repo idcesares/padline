@@ -302,6 +302,7 @@ if (adminSecret && !noAdmin) {
   data = await res.json().catch(() => ({}));
   check("ledger: case opened", res.status === 201 && Number.isInteger(data.case?.id), `status=${res.status}`);
   const caseId = data.case?.id;
+  const caseOpenedAt = data.case?.openedAt ?? 0;
   const act = (action, extra = {}) =>
     ledger(`/cases/${caseId}/actions`, "POST", { action, ...extra });
 
@@ -429,6 +430,21 @@ if (adminSecret && !noAdmin) {
       `status=${res.status}`,
     );
   }
+
+  res = await ledger("/stats");
+  data = await res.json().catch(() => ({}));
+  check(
+    "stats: totals and review timing are reported",
+    res.ok && data.cases?.total >= 1 && typeof data.timing?.grave?.firstReview === "object",
+    `status=${res.status}`,
+  );
+  res = await ledger(`/export/cases?format=csv&from=${caseOpenedAt}`);
+  const casesCsv = await res.text();
+  check(
+    "export: cases as CSV include this run's pad",
+    res.ok && (res.headers.get("content-type") ?? "").includes("text/csv") && casesCsv.includes(adminSlug),
+    `status=${res.status}`,
+  );
 
   res = await ledger("/actions/verify");
   data = await res.json().catch(() => ({}));

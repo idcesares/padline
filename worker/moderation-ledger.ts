@@ -151,13 +151,24 @@ export const CASE_ACTIONS = [
   "block",
   "unblock",
   "purge",
+  "remove",
   "dismiss",
   "close",
 ] as const;
 export type CaseAction = (typeof CASE_ACTIONS)[number];
 
 /** Operations the room performs; the ledger records them around the call. */
-type RoomAction = Exclude<CaseAction, "dismiss" | "close">;
+type RoomAction = Exclude<CaseAction, "dismiss" | "close" | "remove">;
+
+type ExportTable = "reports" | "cases" | "actions" | "evidence";
+
+type Timing = {
+  count: number;
+  medianMs: number | null;
+  p90Ms: number | null;
+  /** Share of cases inside the profile's review target, 0–1. */
+  withinTarget: number | null;
+};
 
 type RoomActionEntry = NewAction & { action: RoomAction };
 
@@ -447,6 +458,38 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       return Response.json({ evidence: this.evidenceById(evidence.id), actions: [record] });
     });
 
+    app.get("/stats", (c) => {
+      const range = parseRange(c.req.query("from"), c.req.query("to"));
+      if (!range) return Response.json({ error: "invalid-range" }, { status: 400 });
+      return Response.json(this.stats(range.from, range.to));
+    });
+
+    // An export discloses ledger contents, so it is recorded before it is sent.
+    app.get("/export/:table{reports|cases|actions|evidence}", async (c) => {
+      const table = c.req.param("table") as ExportTable;
+      const format = c.req.query("format") ?? "json";
+      if (format !== "json" && format !== "csv") {
+        return Response.json({ error: "invalid-format" }, { status: 400 });
+      }
+      const range = parseRange(c.req.query("from"), c.req.query("to"));
+      if (!range) return Response.json({ error: "invalid-range" }, { status: 400 });
+      const includeContact = c.req.query("includeContact") === "1";
+      const rows = this.exportRows(table, range.from, range.to, includeContact);
+      await this.append({
+        caseId: null,
+        slug: "",
+        action: "export",
+        params: { table, format, ...range, includeContact, rows: rows.length },
+      });
+      if (format === "json") return Response.json({ table, ...range, rows });
+      return new Response(toCsv(rows), {
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="padline-${table}.csv"`,
+        },
+      });
+    });
+
     app.post("/reconcile", async () => Response.json(await this.reconcile()));
 
     app.notFound(() => unknownOperation());
@@ -480,6 +523,21 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     // Keeping a copy would defeat a request to remove one's own content.
     if (action === "capture" && found.kind === "removal-request") {
       return refusal(409, "capture-not-allowed");
+    }
+    if (action === "remove") {
+      // A removal request is a purge; remove seals evidence first.
+      if (found.kind === "removal-request") return refusal(409, "remove-not-allowed");
+      return this.remove(found, reason!, legalBasis);
+    }
+    // ADR-0018: a violation is not destroyed unsealed unless the operator says
+    // so explicitly — and that choice is recorded with the purge.
+    if (
+      action === "purge" &&
+      found.kind === "violation" &&
+      body.withoutEvidence !== true &&
+      !this.hasEvidence(found.id)
+    ) {
+      return refusal(409, "evidence-required");
     }
 
     if (action === "dismiss" || action === "close") {
@@ -515,7 +573,10 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
 
     const params: Record<string, unknown> = {};
     if (legalBasis) params.legalBasis = legalBasis;
-    if (action === "purge") params.block = body.block === true;
+    if (action === "purge") {
+      params.block = body.block === true;
+      if (body.withoutEvidence === true) params.withoutEvidence = true;
+    }
     // The case's category becomes the room's public statement of reasons.
     if (action === "block" || action === "freeze" || action === "purge") {
       params.category = found.category;
@@ -985,6 +1046,194 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     };
   }
 
+  /**
+   * The takedown combination for a violation: seal the evidence, then purge
+   * and block in the room's single operation. Each step is its own recorded
+   * intent and outcome, and the first failure stops the sequence — what already
+   * happened stays recorded, and nothing after it runs.
+   */
+  private async remove(
+    found: CaseRecord,
+    reason: string,
+    legalBasis: string | null,
+  ): Promise<ActOutcome> {
+    const shared = { via: "remove", ...(legalBasis ? { legalBasis } : {}) };
+    const captured = await this.runRoomAction({
+      caseId: found.id,
+      slug: found.slug,
+      action: "capture",
+      reason,
+      params: shared,
+    });
+    if (captured.status !== 200) return captured;
+
+    const purged = await this.runRoomAction({
+      caseId: found.id,
+      slug: found.slug,
+      action: "purge",
+      reason,
+      params: { ...shared, block: true, category: found.category },
+    });
+    return {
+      status: purged.status,
+      body: {
+        ...purged.body,
+        evidence: (captured.body.result as { evidence: EvidenceRecord }).evidence,
+        actions: [
+          ...(captured.body.actions as ActionRecord[]),
+          ...(purged.body.actions as ActionRecord[]),
+        ],
+      },
+    };
+  }
+
+  private hasEvidence(caseId: number): boolean {
+    return (
+      this.sql
+        .exec(
+          "SELECT 1 FROM evidence WHERE case_id = ? AND deleted_at IS NULL LIMIT 1",
+          caseId,
+        )
+        .toArray().length > 0
+    );
+  }
+
+  /**
+   * Totals over a window, and how fast cases were handled against the
+   * moderation profile's review targets — the operator's overview and the raw
+   * material of a transparency report.
+   */
+  private stats(from: number, to: number): Record<string, unknown> {
+    const tally = (query: string): Record<string, number> =>
+      Object.fromEntries(
+        this.sql
+          .exec(query, from, to)
+          .toArray()
+          .map((row) => [row.k as string, row.n as number]),
+      );
+    const total = (query: string): number =>
+      this.sql.exec(query, from, to).one().n as number;
+
+    const opened = this.sql
+      .exec(
+        `SELECT priority, opened_at, first_reviewed_at, actioned_at FROM cases
+         WHERE opened_at >= ? AND opened_at < ?`,
+        from,
+        to,
+      )
+      .toArray();
+    const timingFor = (priority: CasePriority) => {
+      const targetHours = MODERATION_PROFILE.reviewTargetHours[priority];
+      const cases = opened.filter((row) => row.priority === priority);
+      const since = (column: string) =>
+        cases
+          .filter((row) => row[column] !== null)
+          .map((row) => (row[column] as number) - (row.opened_at as number));
+      const targetMs = targetHours * 60 * 60 * 1000;
+      return {
+        targetHours,
+        firstReview: timing(since("first_reviewed_at"), targetMs),
+        action: timing(since("actioned_at"), targetMs),
+      };
+    };
+
+    return {
+      window: { from, to },
+      reports: {
+        total: total(
+          "SELECT COUNT(*) AS n FROM reports WHERE received_at >= ? AND received_at < ?",
+        ),
+        byCategory: tally(
+          `SELECT category AS k, COUNT(*) AS n FROM reports
+           WHERE received_at >= ? AND received_at < ? GROUP BY category`,
+        ),
+        bySource: tally(
+          `SELECT source AS k, COUNT(*) AS n FROM reports
+           WHERE received_at >= ? AND received_at < ? GROUP BY source`,
+        ),
+      },
+      cases: {
+        total: opened.length,
+        byStatus: tally(
+          `SELECT status AS k, COUNT(*) AS n FROM cases
+           WHERE opened_at >= ? AND opened_at < ? GROUP BY status`,
+        ),
+        byPriority: tally(
+          `SELECT priority AS k, COUNT(*) AS n FROM cases
+           WHERE opened_at >= ? AND opened_at < ? GROUP BY priority`,
+        ),
+        byKind: tally(
+          `SELECT kind AS k, COUNT(*) AS n FROM cases
+           WHERE opened_at >= ? AND opened_at < ? GROUP BY kind`,
+        ),
+      },
+      actions: {
+        ok: tally(
+          `SELECT action AS k, COUNT(*) AS n FROM actions
+           WHERE outcome = 'ok' AND at >= ? AND at < ? GROUP BY action`,
+        ),
+        failed: tally(
+          `SELECT action AS k, COUNT(*) AS n FROM actions
+           WHERE outcome = 'failed' AND at >= ? AND at < ? GROUP BY action`,
+        ),
+      },
+      evidence: {
+        captured: total(
+          "SELECT COUNT(*) AS n FROM evidence WHERE captured_at >= ? AND captured_at < ?",
+        ),
+        expired: total(
+          "SELECT COUNT(*) AS n FROM evidence WHERE deleted_at >= ? AND deleted_at < ?",
+        ),
+        onHold: this.sql
+          .exec("SELECT COUNT(*) AS n FROM evidence WHERE hold = 1 AND deleted_at IS NULL")
+          .one().n as number,
+      },
+      timing: { grave: timingFor("grave"), standard: timingFor("standard") },
+    };
+  }
+
+  /** Reporter contact is personal data: it leaves only when asked for. */
+  private exportRows(
+    table: ExportTable,
+    from: number,
+    to: number,
+    includeContact: boolean,
+  ): Record<string, unknown>[] {
+    switch (table) {
+      case "reports":
+        return this.sql
+          .exec(
+            "SELECT * FROM reports WHERE received_at >= ? AND received_at < ? ORDER BY id",
+            from,
+            to,
+          )
+          .toArray()
+          .map(toReport)
+          .map(({ contact, ...report }) =>
+            includeContact ? { ...report, contact } : report,
+          );
+      case "cases":
+        return this.sql
+          .exec(`${CASE_SELECT} WHERE opened_at >= ? AND opened_at < ? ORDER BY id`, from, to)
+          .toArray()
+          .map(toCase);
+      case "actions":
+        return this.sql
+          .exec("SELECT * FROM actions WHERE at >= ? AND at < ? ORDER BY seq", from, to)
+          .toArray()
+          .map(toAction);
+      case "evidence":
+        return this.sql
+          .exec(
+            "SELECT * FROM evidence WHERE captured_at >= ? AND captured_at < ? ORDER BY id",
+            from,
+            to,
+          )
+          .toArray()
+          .map(toEvidence);
+    }
+  }
+
   private listCases(filters: {
     status?: string;
     priority?: string;
@@ -1024,17 +1273,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     return this.sql
       .exec("SELECT * FROM reports WHERE case_id = ? ORDER BY id", caseId)
       .toArray()
-      .map((row) => ({
-        id: row.id as number,
-        reference: row.reference as string | null,
-        receivedAt: row.received_at as number,
-        slug: row.slug as string,
-        category: row.category as ReportCategory,
-        description: row.description as string | null,
-        contact: row.contact as string | null,
-        source: row.source as ReportSource,
-        caseId: row.case_id as number,
-      }));
+      .map(toReport);
   }
 
   private actionsFor(caseId: number): ActionRecord[] {
@@ -1158,6 +1397,69 @@ function slugFromPad(pad: string | undefined): string | undefined {
   } catch {
     return trimmed;
   }
+}
+
+function toReport(row: Row): ReportRecord {
+  return {
+    id: row.id as number,
+    reference: row.reference as string | null,
+    receivedAt: row.received_at as number,
+    slug: row.slug as string,
+    category: row.category as ReportCategory,
+    description: row.description as string | null,
+    contact: row.contact as string | null,
+    source: row.source as ReportSource,
+    caseId: row.case_id as number,
+  };
+}
+
+/** A half-open [from, to) window in epoch milliseconds; a missing bound is open. */
+function parseRange(
+  from: string | undefined,
+  to: string | undefined,
+): { from: number; to: number } | null {
+  const start = from === undefined ? 0 : Number(from);
+  const end = to === undefined ? Number.MAX_SAFE_INTEGER : Number(to);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= end
+    ? { from: start, to: end }
+    : null;
+}
+
+/** Nearest-rank percentiles over durations in milliseconds. */
+function timing(durations: number[], targetMs: number): Timing {
+  if (durations.length === 0) {
+    return { count: 0, medianMs: null, p90Ms: null, withinTarget: null };
+  }
+  const sorted = [...durations].sort((a, b) => a - b);
+  const rank = (percentile: number) =>
+    sorted[Math.min(sorted.length - 1, Math.ceil(percentile * sorted.length) - 1)];
+  return {
+    count: sorted.length,
+    medianMs: rank(0.5),
+    p90Ms: rank(0.9),
+    withinTarget: sorted.filter((duration) => duration <= targetMs).length / sorted.length,
+  };
+}
+
+/**
+ * RFC 4180 CSV. Report descriptions are public input, so a cell a spreadsheet
+ * would evaluate as a formula is prefixed with an apostrophe. The JSON export
+ * stays exact, and is the one to verify hashes against.
+ */
+function toCsv(rows: Record<string, unknown>[]): string {
+  if (rows.length === 0) return "";
+  const columns = Object.keys(rows[0]);
+  const cell = (value: unknown): string => {
+    if (value === null || value === undefined) return "";
+    let text = typeof value === "object" ? JSON.stringify(value) : String(value);
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  const lines = [
+    columns.join(","),
+    ...rows.map((row) => columns.map((column) => cell(row[column])).join(",")),
+  ];
+  return `${lines.join("\r\n")}\r\n`;
 }
 
 function toEvidence(row: Row): EvidenceRecord {
