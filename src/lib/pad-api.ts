@@ -1,4 +1,15 @@
-export type PadInfo = { pinProtected: boolean; removed?: boolean };
+/**
+ * A removed or frozen pad also carries its public statement of reasons — the
+ * category and date, never the operator's note (ADR-0018).
+ */
+export type PadInfo = {
+  pinProtected: boolean;
+  removed?: boolean;
+  removedAt?: number;
+  frozen?: boolean;
+  frozenAt?: number;
+  category?: string;
+};
 export type SnapshotMeta = { id: number; createdAt: number; size: number };
 
 const base = (slug: string) => `/parties/pad-room/${slug}`;

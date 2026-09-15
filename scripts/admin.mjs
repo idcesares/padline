@@ -15,7 +15,7 @@ const USAGE = `Usage:
         [--source email|cloudflare|authority|other] [--note "..."] [--contact "..."]
   node scripts/admin.mjs <host> case <id>
   node scripts/admin.mjs <host> case <id> review
-  node scripts/admin.mjs <host> case <id> block|unblock|purge|dismiss|close --reason "..."
+  node scripts/admin.mjs <host> case <id> freeze|unfreeze|disconnect|block|unblock|purge|dismiss|close --reason "..."
         [--legal-basis "..."] [--block]      (--block applies to purge)
   node scripts/admin.mjs <host> pad <slug> info
   node scripts/admin.mjs <host> reconcile

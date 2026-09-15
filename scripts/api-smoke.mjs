@@ -318,6 +318,18 @@ if (adminSecret && !noAdmin) {
     data.actions?.map((action) => action.outcome).join() === "pending,ok",
   );
 
+  res = await act("freeze", { reason: "api-smoke" });
+  check("freeze: accepted", res.ok, `status=${res.status}`);
+  res = await fetch(`${adminBase}?op=info`);
+  data = await res.json();
+  check(
+    "frozen: public info states frozen and the category, not the reason",
+    res.ok && data.frozen === true && data.category === "other" && !JSON.stringify(data).includes("api-smoke"),
+    JSON.stringify(data),
+  );
+  res = await act("unfreeze", { reason: "api-smoke" });
+  check("unfreeze: accepted", res.ok, `status=${res.status}`);
+
   res = await act("block");
   check("block: refused without a reason", res.status === 400, `status=${res.status}`);
 

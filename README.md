@@ -113,7 +113,7 @@ node scripts/admin.mjs <host> case <id> dismiss --reason "<why this is not a vio
 node scripts/admin.mjs <host> case <id> close --reason "reporter informed"
 ```
 
-`node scripts/admin.mjs <host> cases --status open` lists open cases, grave first; `case <id>` shows a case's notices and actions; `unblock --reason` reverses a block applied in error; `verify-chain` checks the action log; `reconcile` resolves an action interrupted between the room and the ledger. `<host>` is your domain (e.g. `padline.page`) or `127.0.0.1:8788` locally.
+`node scripts/admin.mjs <host> cases --status open` lists open cases, grave first; `case <id>` shows a case's notices and actions; `freeze --reason` keeps a pad readable but refuses every edit while you investigate (`unfreeze` lifts it); `disconnect --reason` drops live connections without changing access; `unblock --reason` reverses a block applied in error; `verify-chain` checks the action log; `reconcile` resolves an action interrupted between the room and the ledger. `<host>` is your domain (e.g. `padline.page`) or `127.0.0.1:8788` locally.
 
 **Note:** the Content Policy and Privacy Policy both route reports to the same inbox as [SECURITY.md](SECURITY.md)'s vulnerability reports — triage by content: a bug/exploit goes through SECURITY.md's process, a bad pad goes through this one.
 
@@ -129,7 +129,7 @@ node scripts/admin.mjs <host> case <id> close --reason "reporter informed"
 | `node scripts/api-smoke.mjs` | Smoke suite against the local dev server, takedown lifecycle included — it reads `ADMIN_SECRET` from the environment or `.dev.vars`, and fails if it finds neither |
 | `node scripts/api-smoke.mjs --no-admin` | Same suite with the takedown lifecycle deliberately skipped |
 | `node scripts/api-smoke.mjs https://your-host` | Same suite against a deployed instance |
-| `node scripts/admin.mjs <host> <command>` | Moderation CLI over the ledger: `cases`, `case open`, `case <id> review\|block\|unblock\|purge\|dismiss\|close`, `pad <slug> info`, `reconcile`, `verify-chain` |
+| `node scripts/admin.mjs <host> <command>` | Moderation CLI over the ledger: `cases`, `case open`, `case <id> review\|freeze\|unfreeze\|disconnect\|block\|unblock\|purge\|dismiss\|close`, `pad <slug> info`, `reconcile`, `verify-chain` |
 
 ## Project structure
 

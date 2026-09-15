@@ -1,10 +1,21 @@
 import type { Connection } from "partyserver";
+import { isReportCategory } from "../src/lib/moderation-profile";
 import type { RoomPersistence } from "./room-persistence";
 import type { RoomSecurity } from "./room-security";
 
 export const CLOSE_PAD_REMOVED = 4404;
+/** The operator dropped live connections (ADR-0018); clients may reconnect. */
+export const CLOSE_DISCONNECTED = 4408;
+/** The operator froze the pad (ADR-0018); clients reconnect read-only. */
+export const CLOSE_PAD_FROZEN = 4409;
 
-export type BlockRecord = { at: number; reason?: string };
+/**
+ * An enforcement record in the room's own storage (ADR-0010, ADR-0018). Its
+ * category and date are the public statement of reasons; `reason` is the
+ * operator's note and never leaves an admin response.
+ */
+export type EnforcementRecord = { at: number; reason?: string; category?: string };
+export type BlockRecord = EnforcementRecord;
 
 type RoomCapabilitiesContext = {
   storage: DurableObjectStorage;
@@ -22,6 +33,7 @@ type CapabilityRequest = {
 
 const ADMIN_REASON_MAX = 500;
 const ADMIN_TEXT_PREVIEW_MAX = 64 * 1024;
+const FROZEN_KEY = "frozen";
 
 /**
  * The Room's HTTP capability implementation. Its single interface preserves
@@ -32,9 +44,25 @@ const ADMIN_TEXT_PREVIEW_MAX = 64 * 1024;
  * whether a caller is authorized, coerces request field shapes, and maps the
  * outcomes it gets back onto status codes. Keeping that mapping here means a
  * renamed domain reason cannot silently change the wire API.
+ *
+ * It also owns the two enforcement records, `blocked` and `frozen`. A freeze
+ * is mirrored in memory because PadRoom.isReadOnly runs on every message and
+ * must stay synchronous.
  */
 export class RoomCapabilities {
+  private frozen: EnforcementRecord | null = null;
+
   constructor(private readonly context: RoomCapabilitiesContext) {}
+
+  async load(): Promise<void> {
+    this.frozen =
+      (await this.context.storage.get<EnforcementRecord>(FROZEN_KEY)) ?? null;
+  }
+
+  /** ADR-0018: a frozen pad stays readable and refuses every edit. */
+  isFrozen(): boolean {
+    return this.frozen !== null;
+  }
 
   async handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -48,12 +76,18 @@ export class RoomCapabilities {
       return this.handleTakedown(op, request);
     }
 
-    // A block outranks ordinary pad capabilities. Public info remains visible
-    // so the client can render the removed state without opening a socket.
+    // A block outranks ordinary pad capabilities, and a freeze. Public info
+    // remains visible so the client can render the removed state, with its
+    // statement of reasons, without opening a socket.
     const blocked = await this.context.storage.get<BlockRecord>("blocked");
     if (blocked) {
       if (op === "info" && request.method === "GET") {
-        return Response.json({ pinProtected: false, removed: true });
+        return Response.json({
+          pinProtected: false,
+          removed: true,
+          removedAt: blocked.at,
+          ...publicCategory(blocked),
+        });
       }
       return Response.json({ error: "pad-removed" }, { status: 410 });
     }
@@ -80,6 +114,9 @@ export class RoomCapabilities {
     if (op === "info" && request.method === "GET") {
       return Response.json({
         pinProtected: await this.context.security.isPinProtected(),
+        ...(this.frozen
+          ? { frozen: true, frozenAt: this.frozen.at, ...publicCategory(this.frozen) }
+          : {}),
       });
     }
 
@@ -95,6 +132,9 @@ export class RoomCapabilities {
     if (!(await this.context.security.canEdit(token))) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
+    // A freeze keeps content where the public and the operator can see it, so
+    // it refuses a PIN change as it refuses edits.
+    if (this.frozen) return frozenRefusal();
     const body = await this.readJson<{ pin?: string; remove?: boolean }>(
       request,
     );
@@ -181,6 +221,8 @@ export class RoomCapabilities {
     if (!(await this.context.security.canEdit(token))) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
+    // A restore replaces the document without passing through isReadOnly.
+    if (this.frozen) return frozenRefusal();
     const body = await this.readJson<{ id?: number }>(request);
     if (!body) return Response.json({ error: "bad-json" }, { status: 400 });
     const outcome = await this.context.persistence.restoreSnapshot(body.id);
@@ -204,17 +246,16 @@ export class RoomCapabilities {
         slug: this.context.roomName,
         pinProtected,
         blocked: blocked ?? null,
+        frozen: this.frozen,
         liveConnections: [...this.context.connections()].length,
         ...persisted,
       });
     }
 
     if (op === "admin-block" && request.method === "POST") {
-      const body =
-        (await this.readJson<{ reason?: string }>(request)) ?? {};
-      const record = this.blockRecord(body.reason);
+      const record = this.enforcementRecord(await this.readAdminBody(request));
       await this.context.storage.put("blocked", record);
-      this.closeAllConnections();
+      this.closeAllConnections(CLOSE_PAD_REMOVED, "pad-removed");
       return Response.json({ ok: true, blocked: record });
     }
 
@@ -223,34 +264,60 @@ export class RoomCapabilities {
       return Response.json({ ok: true });
     }
 
+    if (op === "admin-freeze" && request.method === "POST") {
+      const record = this.enforcementRecord(await this.readAdminBody(request));
+      await this.context.storage.put(FROZEN_KEY, record);
+      this.frozen = record;
+      // Editors reconnect and learn the pad is frozen; their sockets would
+      // otherwise keep sending updates the room now drops.
+      this.closeAllConnections(CLOSE_PAD_FROZEN, "pad-frozen");
+      return Response.json({ ok: true, frozen: record });
+    }
+
+    if (op === "admin-unfreeze" && request.method === "POST") {
+      await this.context.storage.delete(FROZEN_KEY);
+      this.frozen = null;
+      return Response.json({ ok: true });
+    }
+
+    if (op === "admin-disconnect" && request.method === "POST") {
+      const disconnected = [...this.context.connections()].length;
+      this.closeAllConnections(CLOSE_DISCONNECTED, "disconnected");
+      return Response.json({ ok: true, disconnected });
+    }
+
     if (op !== "admin-purge" || request.method !== "POST") {
       return this.unknownOperation();
     }
 
-    const body =
-      (await this.readJson<{ block?: boolean; reason?: string }>(request)) ?? {};
+    const body = await this.readAdminBody(request);
     // Block before wiping so nobody reconnects into the gap. The block record
     // intentionally survives the purge.
-    if (body.block) {
-      await this.context.storage.put("blocked", this.blockRecord(body.reason));
+    if (body.block === true) {
+      await this.context.storage.put("blocked", this.enforcementRecord(body));
     }
-    this.closeAllConnections();
+    this.closeAllConnections(CLOSE_PAD_REMOVED, "pad-removed");
     await this.context.persistence.purge();
     await this.context.security.clearSecrets();
-    return Response.json({ ok: true, blocked: !!body.block });
+    return Response.json({ ok: true, blocked: body.block === true });
   }
 
-  private blockRecord(reason: unknown): BlockRecord {
-    const record: BlockRecord = { at: Date.now() };
-    if (typeof reason === "string" && reason.trim()) {
-      record.reason = reason.trim().slice(0, ADMIN_REASON_MAX);
+  private async readAdminBody(request: Request): Promise<Record<string, unknown>> {
+    return (await this.readJson<Record<string, unknown>>(request)) ?? {};
+  }
+
+  private enforcementRecord(body: Record<string, unknown>): EnforcementRecord {
+    const record: EnforcementRecord = { at: Date.now() };
+    if (typeof body.reason === "string" && body.reason.trim()) {
+      record.reason = body.reason.trim().slice(0, ADMIN_REASON_MAX);
     }
+    if (isReportCategory(body.category)) record.category = body.category;
     return record;
   }
 
-  private closeAllConnections(): void {
+  private closeAllConnections(code: number, reason: string): void {
     for (const connection of this.context.connections()) {
-      connection.close(CLOSE_PAD_REMOVED, "pad-removed");
+      connection.close(code, reason);
     }
   }
 
@@ -265,4 +332,13 @@ export class RoomCapabilities {
   private unknownOperation(): Response {
     return Response.json({ error: "unknown-op" }, { status: 404 });
   }
+}
+
+/** The public half of an enforcement record: never its reason. */
+function publicCategory(record: EnforcementRecord): { category?: string } {
+  return record.category ? { category: record.category } : {};
+}
+
+function frozenRefusal(): Response {
+  return Response.json({ error: "pad-frozen" }, { status: 423 });
 }
