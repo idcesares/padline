@@ -14,6 +14,7 @@ import {
 import { LEDGER_NAME, type ModerationLedger } from "./moderation-ledger";
 import { RoomPersistence } from "./room-persistence";
 import { RoomSecurity } from "./room-security";
+import { verifyTurnstile } from "./turnstile";
 
 export { ModerationLedger } from "./moderation-ledger";
 
@@ -23,6 +24,8 @@ type Env = {
   ASSETS: Fetcher;
   /** Bearer secret for op=admin-*; unset disables the admin surface entirely. */
   ADMIN_SECRET?: string;
+  /** Turnstile secret for public reports; unset refuses every report (503). */
+  TURNSTILE_SECRET?: string;
 };
 
 // ADR-0008: cheap-to-enforce, catastrophic-to-miss invariants. The document
@@ -192,11 +195,47 @@ app.all("/api/admin/*", (c) =>
   c.env.ModerationLedger.getByName(LEDGER_NAME).fetch(c.req.raw),
 );
 
+const stringField = (value: unknown) =>
+  typeof value === "string" ? value : undefined;
+
+// ADR-0018: the public report channel. Turnstile is verified before anything
+// is stored; the ledger then answers every well-formed report the same way,
+// whatever state the pad is in. No IP or client metadata is kept.
+app.post("/api/reports", async (c) => {
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "bad-json" }, 400);
+  }
+  const fields = body as Record<string, unknown>;
+  const human = await verifyTurnstile(
+    fields.turnstileToken,
+    c.env.TURNSTILE_SECRET,
+    c.req.header("cf-connecting-ip") ?? null,
+  );
+  if (!human.ok) {
+    return human.reason === "missing-token" || human.reason === "rejected"
+      ? c.json({ error: "verification-failed" }, 403)
+      : c.json({ error: "reporting-unavailable" }, 503);
+  }
+  const outcome = await c.env.ModerationLedger.getByName(LEDGER_NAME).submitReport({
+    pad: stringField(fields.pad),
+    kind: stringField(fields.kind),
+    category: stringField(fields.category),
+    description: stringField(fields.description),
+    contact: stringField(fields.contact),
+  });
+  if (!outcome.ok) return c.json({ error: outcome.error }, 400);
+  return c.json({ ok: true, reference: outcome.reference }, 202);
+});
+
 // ADR-0009: defense-in-depth headers on every HTML/asset response.
 function csp(hostname: string): string {
   return [
     "default-src 'self'",
-    "script-src 'self'",
+    // Turnstile (ADR-0018) is the only third-party origin: its script and its
+    // challenge frame, used by the report form.
+    "script-src 'self' https://challenges.cloudflare.com",
+    "frame-src https://challenges.cloudflare.com",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",

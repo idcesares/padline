@@ -846,6 +846,10 @@ describe("Security headers", () => {
     expect(policy).toContain("frame-ancestors 'none'");
     expect(policy).toContain("object-src 'none'");
     expect(policy).toContain("connect-src 'self' wss://padline.test");
+    // Turnstile is the one third-party origin, and only for script and frame.
+    expect(policy).toContain("script-src 'self' https://challenges.cloudflare.com");
+    expect(policy).toContain("frame-src https://challenges.cloudflare.com");
+    expect(policy).toContain("default-src 'self'");
   });
 
   it("omits CSP and HSTS on localhost so dev is not pinned to HTTPS", async () => {

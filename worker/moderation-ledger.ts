@@ -55,6 +55,8 @@ export type CaseRecord = {
 
 export type ReportRecord = {
   id: number;
+  /** Given to the reporter, so a follow-up email can be matched to its notice. */
+  reference: string | null;
   receivedAt: number;
   slug: string;
   category: ReportCategory;
@@ -78,6 +80,22 @@ export type ActionRecord = {
   prevHash: string;
   hash: string;
 };
+
+/** What the Worker passes on from the public report form. */
+export type ReportInput = {
+  pad?: string;
+  kind?: string;
+  category?: string;
+  description?: string;
+  contact?: string;
+};
+
+export type ReportSubmission =
+  | { ok: true; reference: string }
+  | { ok: false; error: string };
+
+/** The public form cannot file on an authority's behalf. */
+const PUBLIC_KINDS: CaseKind[] = ["violation", "removal-request", "appeal"];
 
 export type ChainVerification =
   | { ok: true; count: number }
@@ -194,8 +212,17 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       description TEXT,
       contact TEXT,
       source TEXT NOT NULL,
-      case_id INTEGER NOT NULL
+      case_id INTEGER NOT NULL,
+      reference TEXT
     )`);
+    // A ledger created before references existed gains the column in place.
+    const reportColumns = this.sql
+      .exec("PRAGMA table_info(reports)")
+      .toArray()
+      .map((column) => column.name);
+    if (!reportColumns.includes("reference")) {
+      this.sql.exec("ALTER TABLE reports ADD COLUMN reference TEXT");
+    }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS actions (
       seq INTEGER PRIMARY KEY,
       at INTEGER NOT NULL,
@@ -216,6 +243,30 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       return unknownOperation();
     }
     return this.app.fetch(request);
+  }
+
+  /**
+   * A public report, called over RPC by the Worker once Turnstile has passed —
+   * `fetch` is operator-only, so this is the one unauthenticated way in. The
+   * answer never depends on whether the pad exists, is blocked, or already has
+   * a case: only malformed input is refused.
+   */
+  async submitReport(input: ReportInput): Promise<ReportSubmission> {
+    const kind = input.kind ?? "violation";
+    if (!PUBLIC_KINDS.includes(kind as CaseKind)) {
+      return { ok: false, error: "invalid-kind" };
+    }
+    const outcome = await this.recordNotice({
+      slug: slugFromPad(input.pad),
+      kind,
+      category: input.category,
+      source: "form",
+      description: input.description,
+      contact: input.contact,
+    });
+    return outcome.ok
+      ? { ok: true, reference: outcome.value.reference }
+      : outcome;
   }
 
   private routes(): Hono {
@@ -523,7 +574,15 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
    * lowers a priority.
    */
   private async recordNotice(body: Record<string, unknown>): Promise<
-    | { ok: true; value: { case: CaseRecord; created: boolean; reportId: number } }
+    | {
+        ok: true;
+        value: {
+          case: CaseRecord;
+          created: boolean;
+          reportId: number;
+          reference: string;
+        };
+      }
     | { ok: false; error: string }
   > {
     const { slug, kind, category, source } = body;
@@ -545,6 +604,8 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
     if (contact === undefined) return { ok: false, error: "invalid-contact" };
 
     const now = Date.now();
+    // Random rather than the row id, so a reference reveals nothing about volume.
+    const reference = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
     // No await inside: find-or-open and the report insert are one atomic step,
     // so two notices on the same slug can never open two cases.
     const { caseId, created, reportId } = this.ctx.storage.transactionSync(() => {
@@ -582,8 +643,8 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       const report = this.sql
         .exec(
           `INSERT INTO reports
-             (received_at, slug, category, description, contact, source, case_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+             (received_at, slug, category, description, contact, source, case_id, reference)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
           now,
           slug,
           category,
@@ -591,6 +652,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
           contact,
           source as ReportSource,
           id,
+          reference,
         )
         .one().id as number;
       return { caseId: id, created: !existing, reportId: report };
@@ -605,7 +667,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
 
     return {
       ok: true,
-      value: { case: this.caseById(caseId)!, created, reportId },
+      value: { case: this.caseById(caseId)!, created, reportId, reference },
     };
   }
 
@@ -650,6 +712,7 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       .toArray()
       .map((row) => ({
         id: row.id as number,
+        reference: row.reference as string | null,
         receivedAt: row.received_at as number,
         slug: row.slug as string,
         category: row.category as ReportCategory,
@@ -763,6 +826,24 @@ function toAction(row: Row): ActionRecord {
     prevHash: row.prev_hash as string,
     hash: row.hash as string,
   };
+}
+
+/**
+ * A reporter may paste a slug, `/slug`, or a full pad URL (read-only links
+ * included). Only the first path segment names the pad; whether it is a valid
+ * slug is still recordNotice's decision.
+ */
+function slugFromPad(pad: string | undefined): string | undefined {
+  if (pad === undefined) return undefined;
+  const trimmed = pad.trim();
+  if (!/[/.]/.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return trimmed.slice(1).split(/[/?#]/)[0];
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    return decodeURIComponent(url.pathname.split("/")[1] ?? "");
+  } catch {
+    return trimmed;
+  }
 }
 
 /** Content never enters the action log; only its size does. */

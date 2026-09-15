@@ -207,6 +207,20 @@ check(
   `status=${res.status} type=${res.headers.get("content-type")} len=${missingAsset.length}`,
 );
 
+// Public reports (ADR-0018): Turnstile gates the channel before anything is
+// stored, on every host.
+const localHost = /^(localhost|127\.)/.test(HOST);
+res = await fetch(`${HTTP}://${HOST}/api/reports`, {
+  method: "POST",
+  body: JSON.stringify({ pad: slug, category: "other" }),
+});
+data = await res.json().catch(() => ({}));
+check(
+  "report: refused without a Turnstile token (403)",
+  res.status === 403 && data.error === "verification-failed",
+  res.status === 503 ? "TURNSTILE_SECRET is not set on this host" : `status=${res.status}`,
+);
+
 // 11. admin surface (ADR-0010, ADR-0018): room admin ops and the moderation
 // ledger are both invisible without the secret…
 res = await fetch(`${base}?op=admin-info`);
@@ -343,6 +357,45 @@ if (adminSecret && !noAdmin) {
   res = await act("close", { reason: "api-smoke cleanup" });
   data = await res.json().catch(() => ({}));
   check("cleanup: case closed", res.ok && data.case?.status === "closed");
+
+  // Turnstile's dummy token passes only its test secret, which belongs in
+  // .dev.vars and never in a deployment — a remote host accepting it is
+  // misconfigured.
+  const reportSlug = `smoke-report-${Math.random().toString(36).slice(2, 8)}`;
+  res = await fetch(`${HTTP}://${HOST}/api/reports`, {
+    method: "POST",
+    body: JSON.stringify({
+      pad: reportSlug,
+      category: "other",
+      description: "api-smoke report",
+      turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
+    }),
+  });
+  data = await res.json().catch(() => ({}));
+  if (localHost) {
+    check(
+      "report: accepted with Turnstile's test token (local test secret)",
+      res.status === 202 && typeof data.reference === "string",
+      `status=${res.status} ${JSON.stringify(data)}`,
+    );
+    res = await ledger(`/cases?slug=${reportSlug}`);
+    data = await res.json().catch(() => ({}));
+    const reported = data.cases?.[0];
+    check("report: filed as a case", reported?.reports === 1, JSON.stringify(data));
+    if (reported) {
+      res = await ledger(`/cases/${reported.id}/actions`, "POST", {
+        action: "close",
+        reason: "api-smoke cleanup",
+      });
+      check("cleanup: report case closed", res.ok);
+    }
+  } else {
+    check(
+      "report: deployed secret rejects Turnstile's test token",
+      res.status === 403,
+      `status=${res.status}`,
+    );
+  }
 
   res = await ledger("/actions/verify");
   data = await res.json().catch(() => ({}));

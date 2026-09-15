@@ -483,3 +483,141 @@ describe("Moderation ledger takedowns", () => {
     await cleanup.body?.cancel();
   });
 });
+
+/** What Turnstile's test sitekeys produce; vitest.config.ts answers siteverify. */
+const DUMMY_TURNSTILE_TOKEN = "XXXX.DUMMY.TOKEN.XXXX";
+
+function submitReport(body: Record<string, unknown>): Promise<Response> {
+  return SELF.fetch("https://padline.test/api/reports", {
+    method: "POST",
+    body: JSON.stringify({
+      turnstileToken: DUMMY_TURNSTILE_TOKEN,
+      category: "spam",
+      ...body,
+    }),
+  });
+}
+
+describe("Public reports", () => {
+  it("refuses a report that fails Turnstile and stores nothing", async () => {
+    const slug = uniqueSlug("report-turnstile");
+
+    for (const turnstileToken of [undefined, "", "a-token-cloudflare-rejects"]) {
+      const response = await submitReport({ pad: slug, turnstileToken });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({ error: "verification-failed" });
+    }
+
+    const { cases } = await adminGet<{ cases: CaseRecord[] }>(`/cases?slug=${slug}`);
+    expect(cases).toEqual([]);
+  });
+
+  it("answers every valid report the same way, whatever the pad's state", async () => {
+    const unused = uniqueSlug("report-unused");
+    const blocked = uniqueSlug("report-blocked");
+    const withCase = uniqueSlug("report-open-case");
+
+    const block = await env.PadRoom.getByName(blocked).fetch(
+      roomUrl(blocked, "?op=admin-block"),
+      { method: "POST", headers: ADMIN_HEADERS, body: "{}" },
+    );
+    expect(block.status).toBe(200);
+    await block.body?.cancel();
+    await openedCase({ slug: withCase, category: "spam" });
+
+    for (const pad of [unused, blocked, withCase]) {
+      const response = await submitReport({ pad });
+      expect(response.status).toBe(202);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(Object.keys(body).sort()).toEqual(["ok", "reference"]);
+      expect(body.reference).toMatch(/^[0-9a-f]{12}$/);
+    }
+
+    // Reporting a pad mints nothing in its room.
+    await expect(publicInfo(unused)).resolves.toEqual({ pinProtected: false });
+    const inspected = await env.PadRoom.getByName(unused).fetch(
+      roomUrl(unused, "?op=admin-info"),
+      { headers: ADMIN_HEADERS },
+    );
+    await expect(inspected.json()).resolves.toMatchObject({ docBytes: 0, snapshots: 0 });
+
+    const cleanup = await env.PadRoom.getByName(blocked).fetch(
+      roomUrl(blocked, "?op=admin-unblock"),
+      { method: "POST", headers: ADMIN_HEADERS },
+    );
+    await cleanup.body?.cancel();
+  });
+
+  it("files reports from slugs or pad URLs onto one case, keeping contact for the operator", async () => {
+    const slug = uniqueSlug("report-attach");
+
+    let response = await submitReport({
+      pad: `https://padline.page/${slug}?ro=some-token`,
+      category: "harassment-doxxing",
+      description: "  publishes my home address  ",
+      contact: "reporter@example.com",
+    });
+    expect(response.status).toBe(202);
+    const { reference } = (await response.json()) as { reference: string };
+
+    response = await submitReport({ pad: `/${slug}`, category: "child-sexual-exploitation" });
+    expect(response.status).toBe(202);
+    await response.body?.cancel();
+
+    const { cases } = await adminGet<{ cases: CaseRecord[] }>(`/cases?slug=${slug}`);
+    expect(cases).toHaveLength(1);
+    expect(cases[0]).toMatchObject({
+      kind: "violation",
+      category: "harassment-doxxing",
+      priority: "grave",
+      reports: 2,
+    });
+
+    const timeline = await adminGet<CaseTimeline>(`/cases/${cases[0].id}`);
+    expect(timeline.reports[0]).toMatchObject({
+      reference,
+      source: "form",
+      description: "publishes my home address",
+      contact: "reporter@example.com",
+    });
+    expect(timeline.reports[1]).toMatchObject({ source: "form", contact: null });
+  });
+
+  it("accepts appeals and removal requests but not authority requests", async () => {
+    const slug = uniqueSlug("report-kinds");
+
+    for (const kind of ["appeal", "removal-request"]) {
+      const response = await submitReport({ pad: slug, kind, category: "privacy" });
+      expect(response.status).toBe(202);
+      await response.body?.cancel();
+    }
+    const { cases } = await adminGet<{ cases: CaseRecord[] }>(`/cases?slug=${slug}`);
+    expect(cases.map((entry) => entry.kind).sort()).toEqual(["appeal", "removal-request"]);
+
+    const response = await submitReport({ pad: slug, kind: "authority-request" });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid-kind" });
+  });
+
+  it("refuses malformed reports once verified", async () => {
+    const refusals: Array<[Record<string, unknown>, string]> = [
+      [{ pad: "api" }, "invalid-slug"],
+      [{ pad: "https://padline.page/" }, "invalid-slug"],
+      [{}, "invalid-slug"],
+      [{ pad: uniqueSlug("report-bad"), category: "not-a-category" }, "invalid-category"],
+      [{ pad: uniqueSlug("report-bad"), contact: "x".repeat(255) }, "invalid-contact"],
+    ];
+    for (const [body, error] of refusals) {
+      const response = await submitReport(body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error });
+    }
+
+    const response = await SELF.fetch("https://padline.test/api/reports", {
+      method: "POST",
+      body: "{not-json",
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad-json" });
+  });
+});
