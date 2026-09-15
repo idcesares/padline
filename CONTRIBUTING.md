@@ -48,7 +48,7 @@ The product invariants in `CONTEXT.md` (URL-first, no friction, real-time by def
    Browser-side pad-session behavior belongs under `e2e/`; Playwright runs it
    through the public pad URL against the same local Worker and real browser
    storage and WebSocket implementations.
-4. **Document.** New invariant or non-obvious decision → new ADR (copy the format of an existing one, numbered sequentially). New domain term → add it to `CONTEXT.md`.
+4. **Document.** New invariant or non-obvious decision → new ADR (copy the format of an existing one, numbered sequentially). New domain term → add it to `CONTEXT.md`. Changed behavior, endpoint, command, setting, or limit → update the page that describes it (the [docs index](docs/README.md) lists them; AGENTS.md has the exact mapping).
 5. **Open a PR** with a clear description of what and why. Commit messages follow the `type: summary` convention (`feat:`, `fix:`, `docs:`, `chore:`).
 
 ## What makes a good contribution

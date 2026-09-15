@@ -1,5 +1,9 @@
 # Operating a public instance
 
+> Setting up an instance is covered in [Self-hosting](self-hosting.md), and
+> day-to-day moderation in the [Moderation guide](moderation-guide.md). This page
+> is about responsibility and jurisdiction.
+
 Padline is MIT-licensed: anyone can fork it and run their own instance. This
 page is for that person. It is not legal advice — for you or for anyone else.
 
