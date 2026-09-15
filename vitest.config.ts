@@ -15,6 +15,7 @@ export default defineConfig({
           ADMIN_SECRET: "test-admin-secret",
           // Turnstile's documented always-pass test secret (ADR-0018).
           TURNSTILE_SECRET: "1x0000000000000000000000000000000AA",
+          TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
         },
         // Answers Turnstile siteverify the way Cloudflare does for its test
         // keys, so report intake runs without network access and without a

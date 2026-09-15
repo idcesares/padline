@@ -1022,6 +1022,18 @@ function submitReport(body: Record<string, unknown>): Promise<Response> {
 }
 
 describe("Public reports", () => {
+  it("serves the public site key and reserves /report", async () => {
+    const response = await SELF.fetch("https://padline.test/api/reports/config");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      siteKey: "1x00000000000000000000AA",
+    });
+
+    const reserved = await submitReport({ pad: "report" });
+    expect(reserved.status).toBe(400);
+    await expect(reserved.json()).resolves.toEqual({ error: "invalid-slug" });
+  });
+
   it("refuses a report that fails Turnstile and stores nothing", async () => {
     const slug = uniqueSlug("report-turnstile");
 

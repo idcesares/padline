@@ -76,4 +76,6 @@ disconnected; a removed pad shows its category and date; and a pad's content
 can be sealed as evidence, kept for the profile's retention period after its
 case closes unless held. The CLI runs actions in bulk, totals cases and review
 times against the profile's targets, and exports reports, cases, actions, and
-evidence records. The report form is decided but not yet implemented.
+evidence records. Visitors report pads, request removal of their own content,
+or appeal a removal through `/report`. Operator notification of new reports and
+the matching policy-page wording are decided but not yet implemented.

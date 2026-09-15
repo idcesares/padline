@@ -87,6 +87,7 @@ Operating a public instance means being able to act on content reports — the p
 ```sh
 npx wrangler secret put ADMIN_SECRET       # paste a long random value; store it in a password manager
 npx wrangler secret put TURNSTILE_SECRET   # from a Turnstile widget created for your domain
+npx wrangler secret put TURNSTILE_SITE_KEY # the same widget's site key (public; served to the /report form)
 npm run deploy
 ```
 

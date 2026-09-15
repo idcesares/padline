@@ -4,8 +4,8 @@
 profile, the ledger, the recorded takedown path (room admin operations closed
 on the public route), the Turnstile-gated report API, freeze, disconnect, the
 statement of reasons on removed pads, evidence capture with retention and
-holds, `remove`, bulk actions, totals, and export are implemented; the report
-form and operator notification are not yet.
+holds, `remove`, bulk actions, totals, export, and the `/report` form are
+implemented; operator notification and the policy-page updates are not yet.
 
 Partially supersedes ADR-0010 (the rejection of an in-app report flow and of
 any central moderation store, and the directly reachable `op=admin-*` surface).
