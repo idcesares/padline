@@ -8,7 +8,7 @@ Report privately via [GitHub Security Advisories](https://github.com/idcesares/p
 
 Include what you found, how to reproduce it, and the impact you believe it has. You'll get an acknowledgment as soon as possible, and a fix or a clear response before any public disclosure is expected.
 
-**This process is for security vulnerabilities in the code** (auth bypass, XSS, escaping a cap, etc). A report about a specific pad's *content* — CSAM, harassment, spam, copyright — is a Content Policy matter, not a vulnerability: see [README § Moderation](README.md#moderation-takedowns) for the takedown runbook. Both land in the same inbox, so triage by content, not by which page the reporter used.
+**This process is for security vulnerabilities in the code** (auth bypass, XSS, escaping a cap, etc). A report about a specific pad's *content* — CSAM, harassment, spam, copyright — is a Content Policy matter, not a vulnerability: reporters should use the instance's `/report` form, and operators handle it with the [moderation guide](docs/moderation-guide.md). Both land in the same inbox, so triage by content, not by which page the reporter used.
 
 ## Scope & security model
 
