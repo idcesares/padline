@@ -26,6 +26,8 @@ type Env = {
   ADMIN_SECRET?: string;
   /** Turnstile secret for public reports; unset refuses every report (503). */
   TURNSTILE_SECRET?: string;
+  /** Turnstile site key (public), served to the report form at runtime. */
+  TURNSTILE_SITE_KEY?: string;
 };
 
 // ADR-0008: cheap-to-enforce, catastrophic-to-miss invariants. The document
@@ -196,6 +198,12 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 // so the Worker forwards without inspecting the secret.
 app.all("/api/admin/*", (c) =>
   c.env.ModerationLedger.getByName(LEDGER_NAME).fetch(c.req.raw),
+);
+
+// The report form's Turnstile site key. Served at runtime rather than baked
+// into the build, so an instance is configured like its secret: no rebuild.
+app.get("/api/reports/config", (c) =>
+  c.json({ siteKey: c.env.TURNSTILE_SITE_KEY ?? null }),
 );
 
 const stringField = (value: unknown) =>

@@ -17,11 +17,14 @@ const ContentPolicy = lazy(() =>
   })),
 );
 
+const Report = lazy(() => import("./routes/report"));
+
 const router = createBrowserRouter([
   { path: "/", element: <Landing /> },
   { path: "/terms", element: <Terms /> },
   { path: "/privacy", element: <Privacy /> },
   { path: "/content-policy", element: <ContentPolicy /> },
+  { path: "/report", element: <Report /> },
   { path: "/:slug", element: <Pad /> },
 ]);
 

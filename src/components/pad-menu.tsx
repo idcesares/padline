@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Check, Copy, Download, MoreHorizontal } from "lucide-react";
+import { Link } from "react-router";
+import { Check, Copy, Download, Flag, MoreHorizontal } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -69,6 +70,13 @@ export function PadMenu({
         >
           Show status line
         </DropdownMenuCheckboxItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to={`/report?pad=${encodeURIComponent(slug)}`}>
+            <Flag className="size-4" />
+            Report this pad
+          </Link>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

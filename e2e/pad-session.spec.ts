@@ -310,11 +310,50 @@ test.describe("pad session route", () => {
         page.getByRole("heading", { name: "This pad was removed" }),
       ).toBeVisible();
       await expect(page.getByText("Reason: Phishing or malware.")).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Appeal this removal" }),
+      ).toHaveAttribute("href", `/report?pad=${removedSlug}&kind=appeal`);
     } finally {
       await act(frozenCase, "unfreeze");
       await act(frozenCase, "close");
       await act(removedCase, "unblock");
       await act(removedCase, "close");
     }
+  });
+
+  test("reports a pad from its menu through the Turnstile-gated form", async ({
+    page,
+    request,
+  }) => {
+    test.skip(!adminSecret, "ADMIN_SECRET or .dev.vars is required");
+    // The widget loads from challenges.cloudflare.com; the dev server serves
+    // Turnstile's always-pass test site key from .dev.vars.
+    const headers = { authorization: `Bearer ${adminSecret}` };
+    const slug = uniqueSlug("reported");
+
+    await page.goto(`/${slug}`);
+    await expectConnected(page);
+    await page.getByRole("button", { name: "Pad menu" }).click();
+    await page.getByRole("menuitem", { name: "Report this pad" }).click();
+
+    await expect(page).toHaveURL(`/report?pad=${slug}`);
+    await expect(page.getByLabel("Pad address")).toHaveValue(slug);
+    await page.getByLabel("What's wrong").selectOption("spam");
+    await page.getByLabel("Details").fill("browser characterization");
+    const send = page.getByRole("button", { name: "Send report" });
+    await expect(send).toBeEnabled({ timeout: 20_000 });
+    await send.click();
+    await expect(page.getByText("your report was received")).toBeVisible();
+
+    const listed = await request.get(`/api/admin/cases?slug=${slug}`, { headers });
+    const { cases } = (await listed.json()) as {
+      cases: Array<{ id: number; reports: number; category: string }>;
+    };
+    expect(cases).toHaveLength(1);
+    expect(cases[0]).toMatchObject({ reports: 1, category: "spam" });
+    await request.post(`/api/admin/cases/${cases[0].id}/actions`, {
+      headers,
+      data: { action: "close", reason: "browser characterization" },
+    });
   });
 });

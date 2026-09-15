@@ -9,8 +9,19 @@ const LAST_UPDATED = "July 16, 2026";
 const CONTACT = MODERATION_PROFILE.operatorContact;
 const REPO = "https://github.com/idcesares/padline";
 
-/** Shared minimal layout for policy pages: header, prose, footer. */
-function LegalPage({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * Shared minimal layout for policy pages and the report form: header, prose,
+ * footer. A page that is not a dated policy passes its own `lede`.
+ */
+export function LegalPage({
+  title,
+  lede,
+  children,
+}: {
+  title: string;
+  lede?: ReactNode;
+  children: ReactNode;
+}) {
   const { theme, toggleTheme } = useTheme();
   useEffect(() => {
     document.title = `${title} — Padline`;
@@ -29,9 +40,13 @@ function LegalPage({ title, children }: { title: string; children: ReactNode }) 
       </header>
       <main className="mx-auto w-full max-w-2xl flex-1 px-6 py-12">
         <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Last updated: {LAST_UPDATED}
-        </p>
+        {lede === undefined ? (
+          <p className="mt-1 text-sm text-muted-foreground">
+            Last updated: {LAST_UPDATED}
+          </p>
+        ) : (
+          lede
+        )}
         <div className="mt-8 space-y-8">{children}</div>
       </main>
       <footer className="mx-auto flex w-full max-w-2xl flex-wrap items-center gap-x-4 gap-y-1 px-6 pb-8 text-sm text-muted-foreground">
@@ -213,7 +228,9 @@ export function ContentPolicy() {
       </Section>
       <Section title="Reporting">
         <p>
-          To report a pad, email{" "}
+          To report a pad, use the{" "}
+          <Link to="/report" className="underline underline-offset-4">report form</Link>{" "}
+          or email{" "}
           <a href={`mailto:${CONTACT}`} className="underline underline-offset-4">{CONTACT}</a>{" "}
           with the pad's URL and what's wrong. Copyright holders should
           include enough detail to identify the work.

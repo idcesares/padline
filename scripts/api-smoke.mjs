@@ -210,6 +210,13 @@ check(
 // Public reports (ADR-0018): Turnstile gates the channel before anything is
 // stored, on every host.
 const localHost = /^(localhost|127\.)/.test(HOST);
+res = await fetch(`${HTTP}://${HOST}/api/reports/config`);
+data = await res.json().catch(() => ({}));
+check(
+  "report: form's site key is served, and a remote host's is not a test key",
+  res.ok && typeof data.siteKey === "string" && (localHost || !/^[123]x0{10}/.test(data.siteKey)),
+  res.ok ? `siteKey=${typeof data.siteKey === "string" ? `${data.siteKey.slice(0, 6)}…` : "unset"}` : `status=${res.status}`,
+);
 res = await fetch(`${HTTP}://${HOST}/api/reports`, {
   method: "POST",
   body: JSON.stringify({ pad: slug, category: "other" }),

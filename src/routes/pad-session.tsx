@@ -497,6 +497,12 @@ function PinPrompt({
           {busy ? "Checking…" : "Open pad"}
         </Button>
       </form>
+      <Link
+        to={`/report?pad=${encodeURIComponent(slug)}`}
+        className="text-sm text-muted-foreground underline underline-offset-4"
+      >
+        Report this pad
+      </Link>
     </main>
   );
 }
@@ -534,9 +540,17 @@ function PadRemoved({
           {label && `Reason: ${label}.`}
         </p>
       )}
-      <Link to="/" className="mt-2 underline underline-offset-4">
-        Back to Padline
-      </Link>
+      <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1">
+        <Link
+          to={`/report?pad=${encodeURIComponent(slug)}&kind=appeal`}
+          className="underline underline-offset-4"
+        >
+          Appeal this removal
+        </Link>
+        <Link to="/" className="underline underline-offset-4">
+          Back to Padline
+        </Link>
+      </div>
     </main>
   );
 }
