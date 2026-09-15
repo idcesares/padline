@@ -207,27 +207,44 @@ check(
   `status=${res.status} type=${res.headers.get("content-type")} len=${missingAsset.length}`,
 );
 
-// 11. admin surface (ADR-0010): invisible without the secret…
+// 11. admin surface (ADR-0010, ADR-0018): room admin ops and the moderation
+// ledger are both invisible without the secret…
 res = await fetch(`${base}?op=admin-info`);
 data = await res.json();
 check(
-  "admin: unauthenticated op looks like unknown-op (404)",
+  "admin: unauthenticated room op looks like unknown-op (404)",
+  res.status === 404 && data.error === "unknown-op",
+);
+res = await fetch(`${HTTP}://${HOST}/api/admin/cases`);
+data = await res.json().catch(() => ({}));
+check(
+  "ledger: unauthenticated request looks like unknown-op (404)",
   res.status === 404 && data.error === "unknown-op",
 );
 
-// …and, when the secret resolves, the full takedown lifecycle.
+// …and, when the secret resolves, the full takedown lifecycle through the
+// ledger. Its case is opened as category "other" and closed at the end, so a
+// production run leaves a recognizable, closed record rather than an open one.
 if (adminSecret && !noAdmin) {
   const Y = await import("yjs");
   const encoding = await import("lib0/encoding.js");
   const adminSlug = `smoke-admin-${Math.random().toString(36).slice(2, 8)}`;
   const adminBase = `${HTTP}://${HOST}/parties/pad-room/${adminSlug}`;
   const headers = { authorization: `Bearer ${adminSecret}` };
-  const admin = (op, method = "POST", body) =>
-    fetch(`${adminBase}?op=${op}`, {
+  const ledger = (path, method = "GET", body) =>
+    fetch(`${HTTP}://${HOST}/api/admin${path}`, {
       method,
       headers,
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+
+  res = await fetch(`${adminBase}?op=admin-info`, { headers });
+  data = await res.json().catch(() => ({}));
+  check(
+    "admin: room op refused on the public route even with the secret",
+    res.status === 404 && data.error === "unknown-op",
+    `status=${res.status}`,
+  );
 
   // Write real content over the Yjs sync protocol (message: sync/update).
   const doc = new Y.Doc();
@@ -261,17 +278,37 @@ if (adminSecret && !noAdmin) {
   // Persistence is debounced (2s); wait it out before inspecting.
   await new Promise((r) => setTimeout(r, 3500));
 
-  res = await admin("admin-info", "GET");
-  data = await res.json();
-  check(
-    "admin-info: sees content through the surface",
-    res.ok && data.text.includes("REPORTED-CONTENT-SMOKE") && data.docBytes > 0,
-    JSON.stringify({ docBytes: data.docBytes, snapshots: data.snapshots }),
-  );
-  check("admin-info: snapshot history exists", data.snapshots >= 1);
+  res = await ledger("/cases", "POST", {
+    slug: adminSlug,
+    kind: "violation",
+    source: "other",
+    category: "other",
+    description: "api-smoke takedown lifecycle",
+  });
+  data = await res.json().catch(() => ({}));
+  check("ledger: case opened", res.status === 201 && Number.isInteger(data.case?.id), `status=${res.status}`);
+  const caseId = data.case?.id;
+  const act = (action, extra = {}) =>
+    ledger(`/cases/${caseId}/actions`, "POST", { action, ...extra });
 
-  res = await admin("admin-block", "POST", { reason: "smoke test" });
-  check("admin-block: accepted", res.ok);
+  res = await act("review");
+  data = await res.json().catch(() => ({}));
+  check(
+    "review: sees content through the ledger",
+    res.ok && data.result?.text?.includes("REPORTED-CONTENT-SMOKE") && data.result.docBytes > 0,
+    JSON.stringify({ docBytes: data.result?.docBytes, snapshots: data.result?.snapshots }),
+  );
+  check("review: snapshot history exists", data.result?.snapshots >= 1);
+  check(
+    "review: intent and outcome recorded",
+    data.actions?.map((action) => action.outcome).join() === "pending,ok",
+  );
+
+  res = await act("block");
+  check("block: refused without a reason", res.status === 400, `status=${res.status}`);
+
+  res = await act("block", { reason: "api-smoke" });
+  check("block: accepted", res.ok, `status=${res.status}`);
 
   res = await fetch(`${adminBase}?op=info`);
   data = await res.json();
@@ -280,29 +317,36 @@ if (adminSecret && !noAdmin) {
   ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
   check("blocked: ws refused (4404)", ws.kind === "close" && ws.code === 4404, JSON.stringify(ws));
 
-  res = await admin("admin-unblock");
-  check("admin-unblock: accepted", res.ok);
+  res = await act("unblock", { reason: "api-smoke" });
+  check("unblock: accepted", res.ok, `status=${res.status}`);
 
   ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
   check("unblocked: ws connects again", ws.kind === "open", ws.kind);
 
-  res = await admin("admin-purge", "POST", { block: true, reason: "smoke test" });
-  check("admin-purge: accepted", res.ok);
+  res = await act("purge", { reason: "api-smoke", block: true });
+  check("purge: accepted", res.ok, `status=${res.status}`);
 
-  res = await admin("admin-info", "GET");
-  data = await res.json();
+  res = await ledger(`/pads/${adminSlug}`);
+  data = await res.json().catch(() => ({}));
   check(
     "purged: doc and snapshots wiped, block survives",
-    res.ok && data.docBytes === 0 && data.snapshots === 0 && data.blocked !== null,
-    JSON.stringify({ docBytes: data.docBytes, snapshots: data.snapshots, blocked: data.blocked }),
+    res.ok && data.result?.docBytes === 0 && data.result?.snapshots === 0 && data.result?.blocked !== null,
+    JSON.stringify({ docBytes: data.result?.docBytes, snapshots: data.result?.snapshots, blocked: data.result?.blocked }),
   );
 
   ws = await wsResult(`${WS}://${HOST}/parties/pad-room/${adminSlug}`);
   check("purged+blocked: ws refused (4404)", ws.kind === "close" && ws.code === 4404, JSON.stringify(ws));
 
-  // Leave no blocked smoke pads behind.
-  res = await admin("admin-unblock");
+  // Leave no blocked smoke pads or open smoke cases behind.
+  res = await act("unblock", { reason: "api-smoke cleanup" });
   check("cleanup: unblocked", res.ok);
+  res = await act("close", { reason: "api-smoke cleanup" });
+  data = await res.json().catch(() => ({}));
+  check("cleanup: case closed", res.ok && data.case?.status === "closed");
+
+  res = await ledger("/actions/verify");
+  data = await res.json().catch(() => ({}));
+  check("ledger: action log chain intact", res.ok && data.ok === true, JSON.stringify(data));
 } else if (noAdmin) {
   console.log("SKIP admin lifecycle — --no-admin was passed");
 } else {

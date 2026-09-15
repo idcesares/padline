@@ -244,20 +244,31 @@ test.describe("pad session route", () => {
     test.skip(!adminSecret, "ADMIN_SECRET or .dev.vars is required");
     const slug = uniqueSlug("removed");
     const headers = { authorization: `Bearer ${adminSecret}` };
+    // ADR-0018: takedowns go through the moderation ledger, never the room's
+    // public route.
+    const opened = await request.post("/api/admin/cases", {
+      headers,
+      data: { slug, kind: "violation", source: "other", category: "other" },
+    });
+    expect(opened.status()).toBe(201);
+    const caseId = ((await opened.json()) as { case: { id: number } }).case.id;
+    const act = (action: string) =>
+      request.post(`/api/admin/cases/${caseId}/actions`, {
+        headers,
+        data: { action, reason: "browser characterization" },
+      });
 
     try {
       await page.goto(`/${slug}`);
       await expectConnected(page);
-      const block = await request.post(roomPath(slug, "op=admin-block"), {
-        headers,
-        data: { reason: "browser characterization" },
-      });
+      const block = await act("block");
       expect(block.ok()).toBeTruthy();
       await expect(
         page.getByRole("heading", { name: "This pad was removed" }),
       ).toBeVisible();
     } finally {
-      await request.post(roomPath(slug, "op=admin-unblock"), { headers });
+      await act("unblock");
+      await act("close");
     }
   });
 });

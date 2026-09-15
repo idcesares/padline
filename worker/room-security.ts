@@ -1,3 +1,5 @@
+import { isAdminRequest } from "./admin-auth";
+
 type PinRecord = { salt: string; hash: string };
 
 type PinFails = { count: number; lastAt: number };
@@ -71,7 +73,7 @@ async function hashPin(pin: string, existingSalt?: string): Promise<PinRecord> {
  * Constant-time compare for values that are already fixed-length — base64
  * hashes and UUIDs. The length check short-circuits, so this must not be
  * used directly on a secret whose length is not already public: see
- * digestEqual.
+ * admin-auth.ts.
  */
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -80,23 +82,6 @@ function safeEqual(a: string, b: string): boolean {
     diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
   }
   return diff === 0;
-}
-
-/**
- * Constant-time compare for secrets of unknown length. SHA-256 first so both
- * operands are always 44 base64 chars — otherwise safeEqual's length
- * short-circuit lets a caller probe the length of ADMIN_SECRET.
- */
-async function digestEqual(a: string, b: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const [left, right] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(a)),
-    crypto.subtle.digest("SHA-256", encoder.encode(b)),
-  ]);
-  return safeEqual(
-    toBase64(new Uint8Array(left)),
-    toBase64(new Uint8Array(right)),
-  );
 }
 
 /**
@@ -138,12 +123,9 @@ export class RoomSecurity {
     return !!stored && safeEqual(candidate, stored);
   }
 
+  /** The operator's secret is compared in admin-auth.ts, shared with the ledger. */
   async isAdmin(request: Request): Promise<boolean> {
-    const secret = this.env.ADMIN_SECRET;
-    if (!secret) return false;
-    const auth = request.headers.get("authorization") ?? "";
-    const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    return provided.length > 0 && (await digestEqual(provided, secret));
+    return isAdminRequest(request, this.env.ADMIN_SECRET);
   }
 
   /**

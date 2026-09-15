@@ -1,75 +1,251 @@
-// Moderation CLI for the PadRoom admin surface (ADR-0010).
+// Moderation CLI for the moderation ledger (ADR-0018). Every command goes
+// through /api/admin/*, so every review and takedown is recorded; the room's
+// own admin ops are no longer reachable from outside.
 //
-// Usage:
-//   ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> info
-//   ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> block [--reason "..."]
-//   ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> unblock
-//   ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> purge [--block] [--reason "..."]
+// Usage: node scripts/admin.mjs --help
 //
-// <host> examples: 127.0.0.1:8788, https://padline.page
-//
-// info    — metadata + content preview (works through a PIN)
-// block   — pad refuses all access; visitors see the removed screen
-// unblock — lift a block
-// purge   — wipe doc, snapshots, PIN, sessions, read-only token;
-//           --block also blocks the slug so it can't be refilled
+// ADMIN_SECRET is read from the environment, then .dev.vars.
 
-const [arg, slug, action] = process.argv.slice(2);
-const secret = process.env.ADMIN_SECRET;
+import { readFileSync } from "node:fs";
 
-function die(msg) {
-  console.error(msg);
+const USAGE = `Usage:
+  node scripts/admin.mjs <host> cases [--status open] [--priority grave] [--slug <slug>]
+  node scripts/admin.mjs <host> case open <slug> --category <id>
+        [--kind violation|removal-request|appeal|authority-request]
+        [--source email|cloudflare|authority|other] [--note "..."] [--contact "..."]
+  node scripts/admin.mjs <host> case <id>
+  node scripts/admin.mjs <host> case <id> review
+  node scripts/admin.mjs <host> case <id> block|unblock|purge|dismiss|close --reason "..."
+        [--legal-basis "..."] [--block]      (--block applies to purge)
+  node scripts/admin.mjs <host> pad <slug> info
+  node scripts/admin.mjs <host> reconcile
+  node scripts/admin.mjs <host> verify-chain
+
+<host>: padline.page, https://padline.page, or 127.0.0.1:8788
+Categories are the ids in src/lib/moderation-profile.ts.`;
+
+const BOOLEAN_FLAGS = new Set(["block", "help"]);
+
+function die(message) {
+  console.error(message);
   process.exit(1);
 }
 
-if (!arg || !slug || !["info", "block", "unblock", "purge"].includes(action)) {
-  die(
-    "Usage: ADMIN_SECRET=... node scripts/admin.mjs <host> <slug> <info|block|unblock|purge> [--block] [--reason \"...\"]",
-  );
+function parseArgs(args) {
+  const positional = [];
+  const flags = {};
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) {
+      positional.push(arg);
+      continue;
+    }
+    const name = arg.slice(2);
+    if (BOOLEAN_FLAGS.has(name)) {
+      flags[name] = true;
+      continue;
+    }
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith("--")) {
+      die(`--${name} needs a value.\n\n${USAGE}`);
+    }
+    flags[name] = value;
+    index++;
+  }
+  return { positional, flags };
 }
-if (!secret) die("ADMIN_SECRET is not set.");
 
-const flags = process.argv.slice(5);
-const block = flags.includes("--block");
-const reasonIdx = flags.indexOf("--reason");
-const reason = reasonIdx >= 0 ? flags[reasonIdx + 1] : undefined;
-
-const isLocal = /^(localhost|127\.)/.test(arg);
-const origin = arg.startsWith("http")
-  ? arg
-  : `${isLocal ? "http" : "https"}://${arg}`;
-const base = `${origin.replace(/\/$/, "")}/parties/pad-room/${slug}`;
-
-const requests = {
-  info: { op: "admin-info", method: "GET" },
-  block: { op: "admin-block", method: "POST", body: { reason } },
-  unblock: { op: "admin-unblock", method: "POST", body: {} },
-  purge: { op: "admin-purge", method: "POST", body: { block, reason } },
-};
-
-const { op, method, body } = requests[action];
-const res = await fetch(`${base}?op=${op}`, {
-  method,
-  headers: { authorization: `Bearer ${secret}` },
-  ...(body ? { body: JSON.stringify(body) } : {}),
-});
-
-const data = await res.json().catch(() => null);
-if (res.status === 404 && data?.error === "unknown-op") {
-  die(
-    "Rejected as unknown-op: wrong ADMIN_SECRET, or the secret is not deployed on this host.",
-  );
+function readDevVar(name) {
+  try {
+    const line = readFileSync(new URL("../.dev.vars", import.meta.url), "utf8")
+      .split(/\r?\n/)
+      .find((candidate) => candidate.trimStart().startsWith(`${name}=`));
+    if (!line) return undefined;
+    return line.slice(line.indexOf("=") + 1).trim().replace(/^['"]|['"]$/g, "");
+  } catch {
+    return undefined;
+  }
 }
-if (!res.ok) die(`HTTP ${res.status}: ${JSON.stringify(data)}`);
 
-if (action === "info") {
-  const { text, ...meta } = data;
-  console.log(JSON.stringify(meta, null, 2));
+const { positional, flags } = parseArgs(process.argv.slice(2));
+const [host, command, ...rest] = positional;
+if (flags.help) {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (!host || !command) die(USAGE);
+
+const secret = process.env.ADMIN_SECRET ?? readDevVar("ADMIN_SECRET");
+if (!secret) die("ADMIN_SECRET is not set in the environment or .dev.vars.");
+
+const isLocal = /^(localhost|127\.)/.test(host);
+const origin = (
+  host.startsWith("http") ? host : `${isLocal ? "http" : "https"}://${host}`
+).replace(/\/$/, "");
+
+async function call(path, { method = "GET", body } = {}) {
+  const res = await fetch(`${origin}/api/admin${path}`, {
+    method,
+    headers: { authorization: `Bearer ${secret}` },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => null);
+  if (res.status === 404 && data?.error === "unknown-op") {
+    die(
+      "Rejected as unknown-op: wrong ADMIN_SECRET, the secret is not deployed on this host, or the host predates the moderation ledger.",
+    );
+  }
+  return { res, data };
+}
+
+function expectOk({ res, data }) {
+  if (!res.ok) die(`HTTP ${res.status}: ${JSON.stringify(data, null, 2)}`);
+  return data;
+}
+
+const when = (ms) =>
+  ms ? `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")}Z` : "—";
+
+function printCase(entry) {
   console.log(
-    text
-      ? `\n--- content preview ---\n${text}`
-      : "\n(no persisted content)",
+    `#${entry.id} ${entry.priority.toUpperCase()} ${entry.status} — /${entry.slug}`,
   );
-} else {
-  console.log(JSON.stringify(data, null, 2));
+  console.log(
+    `  ${entry.kind}, ${entry.category}, ${entry.reports} notice(s)`,
+  );
+  console.log(
+    `  opened ${when(entry.openedAt)} · first review ${when(entry.firstReviewedAt)} · actioned ${when(entry.actionedAt)} · closed ${when(entry.closedAt)}`,
+  );
+  if (entry.decision) console.log(`  decision: ${entry.decision}`);
+  if (entry.legalBasis) console.log(`  legal basis: ${entry.legalBasis}`);
+}
+
+function printActions(actions) {
+  for (const action of actions) {
+    console.log(
+      `  [${action.seq}] ${when(action.at)} ${action.action} ${action.outcome}${action.reason ? ` — ${action.reason}` : ""}`,
+    );
+  }
+}
+
+function printReview(result = {}) {
+  const { text, ...meta } = result;
+  console.log(JSON.stringify(meta, null, 2));
+  console.log(text ? `\n--- content preview ---\n${text}` : "\n(no persisted content)");
+}
+
+switch (command) {
+  case "cases": {
+    const query = new URLSearchParams();
+    for (const key of ["status", "priority", "slug"]) {
+      if (flags[key]) query.set(key, flags[key]);
+    }
+    const suffix = query.size ? `?${query}` : "";
+    const { cases } = expectOk(await call(`/cases${suffix}`));
+    if (cases.length === 0) console.log("No cases.");
+    for (const entry of cases) {
+      console.log(
+        [
+          `#${entry.id}`,
+          entry.priority,
+          entry.status,
+          entry.kind,
+          entry.category,
+          `${entry.reports} notice(s)`,
+          when(entry.openedAt),
+          `/${entry.slug}`,
+        ].join("\t"),
+      );
+    }
+    break;
+  }
+
+  case "case": {
+    const [target, verb] = rest;
+    if (target === "open") {
+      const slug = rest[1];
+      if (!slug || !flags.category) die(USAGE);
+      const data = expectOk(
+        await call("/cases", {
+          method: "POST",
+          body: {
+            slug,
+            category: flags.category,
+            kind: flags.kind ?? "violation",
+            source: flags.source ?? "email",
+            description: flags.note,
+            contact: flags.contact,
+          },
+        }),
+      );
+      console.log(data.created ? "Opened a new case." : "Attached to the open case.");
+      printCase(data.case);
+      break;
+    }
+
+    const id = Number(target);
+    if (!Number.isInteger(id)) die(USAGE);
+
+    if (!verb) {
+      const data = expectOk(await call(`/cases/${id}`));
+      printCase(data.case);
+      console.log("\nNotices:");
+      for (const report of data.reports) {
+        console.log(
+          `  ${when(report.receivedAt)} ${report.source} ${report.category}${report.contact ? ` <${report.contact}>` : ""}${report.description ? ` — ${report.description}` : ""}`,
+        );
+      }
+      console.log("\nActions:");
+      printActions(data.actions);
+      break;
+    }
+
+    const data = expectOk(
+      await call(`/cases/${id}/actions`, {
+        method: "POST",
+        body: {
+          action: verb,
+          reason: flags.reason,
+          legalBasis: flags["legal-basis"],
+          ...(verb === "purge" ? { block: flags.block === true } : {}),
+        },
+      }),
+    );
+    if (verb === "review") printReview(data.result);
+    else if (data.result) console.log(JSON.stringify(data.result, null, 2));
+    console.log();
+    printCase(data.case);
+    printActions(data.actions);
+    break;
+  }
+
+  case "pad": {
+    const [slug, verb] = rest;
+    if (!slug || verb !== "info") die(USAGE);
+    const data = expectOk(await call(`/pads/${slug}`));
+    printReview(data.result);
+    console.log("\n(recorded as a review with no case)");
+    break;
+  }
+
+  case "reconcile": {
+    const { reconciled } = expectOk(await call("/reconcile", { method: "POST" }));
+    console.log(
+      reconciled.length
+        ? `Resolved ${reconciled.length} pending action(s):`
+        : "No pending actions.",
+    );
+    printActions(reconciled);
+    break;
+  }
+
+  case "verify-chain": {
+    const data = expectOk(await call("/actions/verify"));
+    if (!data.ok) die(`Action log BROKEN at seq ${data.brokenAt} (of ${data.count}).`);
+    console.log(`Action log intact: ${data.count} action(s).`);
+    break;
+  }
+
+  default:
+    die(USAGE);
 }

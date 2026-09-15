@@ -47,6 +47,12 @@
       {
         "name": "PadRoom",
         "class_name": "PadRoom"
+      },
+      {
+        // ADR-0018: one instance, addressed by a fixed name. Records reports,
+        // cases, evidence, and the action log; never the enforcement authority.
+        "name": "ModerationLedger",
+        "class_name": "ModerationLedger"
       }
     ]
   },
@@ -54,6 +60,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["PadRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ModerationLedger"]
     }
   ],
   "observability": {

@@ -16,6 +16,15 @@ const uniqueSlug = (prefix: string) =>
 
 const ADMIN_HEADERS = { authorization: "Bearer test-admin-secret" };
 
+/**
+ * ADR-0018: room admin ops are reachable only from the moderation ledger, which
+ * calls the room's stub — the public route refuses them. These tests
+ * characterize the room underneath that path, so they call the stub the same
+ * way. The public refusal itself is covered in moderation.test.ts.
+ */
+const roomFetch = (slug: string, url: string, init?: RequestInit) =>
+  env.PadRoom.getByName(slug).fetch(url, init);
+
 type AdminInfo = {
   docBytes: number;
   snapshots: number;
@@ -27,7 +36,7 @@ type SnapshotMeta = { id: number; createdAt: number; size: number };
 
 /** Inspection reads persisted content, so it is the external view of storage. */
 async function adminInfo(slug: string): Promise<AdminInfo> {
-  const response = await SELF.fetch(roomUrl(slug, "?op=admin-info"), {
+  const response = await roomFetch(slug, roomUrl(slug, "?op=admin-info"), {
     headers: ADMIN_HEADERS,
   });
   expect(response.status).toBe(200);
@@ -172,11 +181,11 @@ describe("PadRoom HTTP interface", () => {
   it("conceals admin capabilities from unauthorized callers", async () => {
     const slug = uniqueSlug("admin-concealment");
 
-    let response = await SELF.fetch(roomUrl(slug, "?op=admin-info"));
+    let response = await roomFetch(slug, roomUrl(slug, "?op=admin-info"));
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "unknown-op" });
 
-    response = await SELF.fetch(roomUrl(slug, "?op=admin-info"), {
+    response = await roomFetch(slug, roomUrl(slug, "?op=admin-info"), {
       headers: { authorization: "Bearer wrong-secret" },
     });
     expect(response.status).toBe(404);
@@ -187,7 +196,7 @@ describe("PadRoom HTTP interface", () => {
     const slug = uniqueSlug("admin-block");
     const adminHeaders = { authorization: "Bearer test-admin-secret" };
 
-    let response = await SELF.fetch(roomUrl(slug, "?op=admin-block"), {
+    let response = await roomFetch(slug, roomUrl(slug, "?op=admin-block"), {
       method: "POST",
       headers: adminHeaders,
       body: JSON.stringify({ reason: "characterization" }),
@@ -215,7 +224,7 @@ describe("PadRoom HTTP interface", () => {
     expect(response.status).toBe(410);
     await expect(response.json()).resolves.toEqual({ error: "pad-removed" });
 
-    response = await SELF.fetch(roomUrl(slug, "?op=admin-unblock"), {
+    response = await roomFetch(slug, roomUrl(slug, "?op=admin-unblock"), {
       method: "POST",
       headers: adminHeaders,
     });
@@ -236,7 +245,7 @@ describe("PadRoom HTTP interface", () => {
     expect(response.status).toBe(200);
     await response.body?.cancel();
 
-    response = await SELF.fetch(roomUrl(slug, "?op=admin-purge"), {
+    response = await roomFetch(slug, roomUrl(slug, "?op=admin-purge"), {
       method: "POST",
       headers: adminHeaders,
       body: JSON.stringify({ block: true, reason: "characterization" }),
@@ -244,7 +253,7 @@ describe("PadRoom HTTP interface", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, blocked: true });
 
-    response = await SELF.fetch(roomUrl(slug, "?op=admin-info"), {
+    response = await roomFetch(slug, roomUrl(slug, "?op=admin-info"), {
       headers: adminHeaders,
     });
     const info = (await response.json()) as {
@@ -587,7 +596,7 @@ describe("PadRoom access credentials", () => {
       await (await verifyPinRequest(slug, "9999")).body?.cancel();
     }
 
-    let response = await SELF.fetch(roomUrl(slug, "?op=admin-purge"), {
+    let response = await roomFetch(slug, roomUrl(slug, "?op=admin-purge"), {
       method: "POST",
       headers: ADMIN_HEADERS,
       body: JSON.stringify({}),
@@ -778,7 +787,7 @@ describe("PadRoom persisted pad state", () => {
     await saveDocument(stub, (doc) => appendParagraph(doc, "reported content"));
     expect((await adminInfo(slug)).text).toContain("reported content");
 
-    const response = await SELF.fetch(roomUrl(slug, "?op=admin-purge"), {
+    const response = await roomFetch(slug, roomUrl(slug, "?op=admin-purge"), {
       method: "POST",
       headers: ADMIN_HEADERS,
       body: JSON.stringify({}),

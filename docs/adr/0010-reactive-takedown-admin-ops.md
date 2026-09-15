@@ -2,9 +2,10 @@
 
 **Status:** accepted (2026-07-16)
 
-**Partially superseded by ADR-0018** (accepted 2026-09-13, not yet
-implemented): the rejection of an in-app report flow and of any central
-moderation store, and the directly reachable `op=admin-*` surface. The room as
+**Partially superseded by ADR-0018** (accepted 2026-09-13): the rejection of
+an in-app report flow and of any central moderation store, and the directly
+reachable `op=admin-*` surface — which the public route now refuses, leaving the
+moderation ledger as the only caller. The room as
 enforcement authority, the operations themselves, secret concealment, and the
 rejection of a pad registry stand.
 

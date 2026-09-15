@@ -50,9 +50,10 @@ reports — is a question for your own jurisdiction.
    (in Brazil, for example, art. 15 binds legal entities acting professionally
    for economic purposes), note that Padline does not keep access logs — you
    would need to add that, and disclose it.
-2. **Edit the moderation profile** — jurisdiction, operator contact, grave
-   categories, review targets, retention periods. *(Planned: moderation kit
-   phase 1, `.scratch`-tracked; until then the values are only in ADR-0018.)*
+2. **Edit the moderation profile**, `src/lib/moderation-profile.ts` —
+   jurisdiction, operator contact (the policy pages use it), grave categories,
+   review targets, retention periods. Keep existing category ids stable once
+   your instance has stored cases.
 3. **Rewrite the policy pages** for your instance: your contact, your
    jurisdiction, your retention, your enforcement process. Do not publish
    `padline.page`'s pages under your domain.
@@ -66,7 +67,8 @@ reports — is a question for your own jurisdiction.
 
 ## Status
 
-Today, instances have the takedown operations of
-[ADR-0010](adr/0010-reactive-takedown-admin-ops.md). The report channel, case
-ledger, evidence capture, and moderation profile of ADR-0018 are decided but not
-yet implemented.
+Today, instances have the moderation profile and the case ledger of
+ADR-0018: notices are recorded as cases, and every review and takedown
+([ADR-0010](adr/0010-reactive-takedown-admin-ops.md)'s operations) runs through
+the ledger and its hash-chained action log. The public report channel, evidence
+capture, freeze, and export are decided but not yet implemented.

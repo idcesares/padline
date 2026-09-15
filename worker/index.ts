@@ -11,11 +11,15 @@ import {
   RoomCapabilities,
   type BlockRecord,
 } from "./room-capabilities";
+import { LEDGER_NAME, type ModerationLedger } from "./moderation-ledger";
 import { RoomPersistence } from "./room-persistence";
 import { RoomSecurity } from "./room-security";
 
+export { ModerationLedger } from "./moderation-ledger";
+
 type Env = {
   PadRoom: DurableObjectNamespace<PadRoom>;
+  ModerationLedger: DurableObjectNamespace<ModerationLedger>;
   ASSETS: Fetcher;
   /** Bearer secret for op=admin-*; unset disables the admin surface entirely. */
   ADMIN_SECRET?: string;
@@ -182,6 +186,12 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
 
+// ADR-0018: the operator's surface. The ledger authorizes every request itself,
+// so the Worker forwards without inspecting the secret.
+app.all("/api/admin/*", (c) =>
+  c.env.ModerationLedger.getByName(LEDGER_NAME).fetch(c.req.raw),
+);
+
 // ADR-0009: defense-in-depth headers on every HTML/asset response.
 function csp(hostname: string): string {
   return [
@@ -232,6 +242,17 @@ export default {
     if (LEGACY_HOSTS.has(requestUrl.hostname)) {
       requestUrl.hostname = CANONICAL_HOST;
       return Response.redirect(requestUrl.toString(), 301);
+    }
+
+    // ADR-0018: room admin ops are reachable only from the moderation ledger,
+    // which calls the room's stub directly — so no review or takedown happens
+    // without a record. The public route answers like any unknown op, whoever
+    // asks and whatever secret they present.
+    if (
+      requestUrl.pathname.startsWith("/parties/") &&
+      requestUrl.searchParams.get("op")?.startsWith("admin-")
+    ) {
+      return Response.json({ error: "unknown-op" }, { status: 404 });
     }
 
     const roomResponse = await routePartykitRequest(request, env as never);
