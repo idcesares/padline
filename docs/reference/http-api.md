@@ -133,7 +133,7 @@ anything else answers `404 unknown-op`.
 | --- | --- | --- |
 | `POST /cases` | `{ slug, kind, category, source, description?, contact? }` | `201` new / `200` attached: `{ case, created, reportId, reference }` |
 | `GET /cases` | `?status=&priority=&slug=` | `{ cases: Case[] }`, grave first, then oldest |
-| `GET /cases/:id` | — | `{ case, reports, evidence, actions }` |
+| `GET /cases/:id` | `?includeContact=1` to include reporter contact | `{ case, reports, evidence, actions }`; reports omit `contact` by default |
 | `POST /cases/:id/actions` | [action body](#action-body) | [action response](#action-response) |
 | `GET /pads/:slug` | — | A case-less review: `{ actions, result }` |
 | `GET /evidence/:id` | — | `{ evidence }` |

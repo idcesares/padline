@@ -91,7 +91,7 @@ node scripts/api-smoke.mjs    # in another — every check must pass
   `127.0.0.1:8788` in `wrangler.jsonc` for this reason — don't "fix" the port
   back to a default.
 - `npm install` needs `--legacy-peer-deps` (already set in `.npmrc`) because
-  `partyserver` peers `workers-types` v4 against wrangler's v5.
+  `y-partyserver` peers `workers-types` v4 against wrangler's v5.
 - `vite build` / `vitest` can leave orphaned `workerd.exe` processes that lock
   `dist\padline\.wrangler`, breaking the next build with `EPERM`. Fix: stop
   any `workerd` processes and remove `dist` before rebuilding.

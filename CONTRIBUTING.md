@@ -4,6 +4,10 @@ Thanks for your interest! Padline is intentionally small and sharply scoped — 
 
 ## Getting set up
 
+Use Node.js 24 LTS and npm. `.nvmrc` selects Node 24, and the Node types
+match that runtime. After dependency updates, reinstall Playwright's Chromium
+with the command below.
+
 ```sh
 git clone https://github.com/idcesares/padline.git
 cd padline

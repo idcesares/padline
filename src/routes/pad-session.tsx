@@ -4,6 +4,7 @@ import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import useYProvider from "y-partyserver/react";
 import { BlockNoteSchema, defaultBlockSpecs } from "@blocknote/core";
+import { withCollaboration } from "@blocknote/core/yjs";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/shadcn";
 import "@blocknote/shadcn/style.css";
@@ -309,14 +310,14 @@ function ActivePadSession({
 
   const users = useAwarenessUsers(provider);
   const editor = useCreateBlockNote(
-    {
+    withCollaboration({
       schema,
       collaboration: {
         provider,
         fragment: doc.getXmlFragment("document"),
         user: identity,
       },
-    },
+    }),
     [provider],
   );
 

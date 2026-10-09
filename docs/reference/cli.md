@@ -71,12 +71,14 @@ node scripts/admin.mjs <host> case open <slug> --category <id> \
 
 ### `case <id>`
 
-Show one case: summary, notices (with reference codes and contacts), evidence,
+Show one case: summary, notices (with reference codes), evidence,
 and every recorded action.
 
 ```sh
-node scripts/admin.mjs <host> case <id>
+node scripts/admin.mjs <host> case <id> [--include-contact]
 ```
+
+Reporter contact appears only with `--include-contact`.
 
 ### `case <id> <action>`
 

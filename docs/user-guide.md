@@ -44,6 +44,8 @@ Opening an address costs nothing: a pad isn't stored until someone types in it.
 
 Share the address and everyone who opens it edits the same page live.
 
+On mobile, the formatting toolbar stays above the on-screen keyboard.
+
 - **Rich blocks** — headings, lists, checklists, quotes, code, and more, using
   the `/` menu. Images and file attachments aren't supported yet.
 - **Live cursors and selections** show where others are working.
@@ -202,7 +204,10 @@ pad exists — reporting never reveals anything about a pad.
   live in your browser. Clearing site data removes them.
 - **Reports** are kept by the operator to handle them; your email, if you gave
   one, is deleted a set time after the report is closed (the form tells you how
-  long). Content from reported pads may be kept as evidence for a limited time.
+  long). Content from reported pads, including PIN-protected pads, may be kept
+  as evidence while the case is open and for a limited time afterward.
+  Preservation holds postpone evidence deletion; evidence metadata and action
+  history remain after the content is deleted.
 - **Pads aren't indexed** by search engines.
 
 The instance's own [Privacy Policy](https://padline.page/privacy) is the

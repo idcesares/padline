@@ -5,7 +5,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MODERATION_PROFILE } from "@/lib/moderation-profile";
 
-const LAST_UPDATED = "July 16, 2026";
+const LAST_UPDATED = "October 9, 2026";
 const CONTACT = MODERATION_PROFILE.operatorContact;
 const REPO = "https://github.com/idcesares/padline";
 
@@ -163,6 +163,27 @@ export function Privacy() {
           people in the same pad, only while you're connected, and is never
           tied to a real identity.
         </p>
+        <p>
+          <strong className="text-foreground">Reports and moderation records</strong>{" "}
+          — we store the reported pad address, category, details, optional contact
+          information, and our review and action history in a moderation ledger
+          on Cloudflare. Reports do not include your IP address. Contact information
+          is restricted to the operator and cleared within approximately{" "}
+          {MODERATION_PROFILE.reporterContactRetentionDays} days after the case closes;
+          retention runs daily. Reports and the action history remain after contact
+          information is cleared.
+        </p>
+        <p>
+          <strong className="text-foreground">Evidence</strong> — when reviewing
+          reported content, we may seal a copy of the pad's persisted content and
+          related pad metadata, including from PIN-protected pads. Evidence is
+          accessible only to the operator and retained while its case is open.
+          It is deleted within approximately {MODERATION_PROFILE.evidenceRetentionDays}{" "}
+          days after closure, with daily retention checks, unless placed on a
+          preservation hold. A hold prevents deletion until released. Evidence
+          metadata and the action history remain after the content is deleted.
+          Requests to remove your own content are handled without capturing evidence.
+        </p>
       </Section>
       <Section title="What stays on your device">
         <p>
@@ -178,6 +199,11 @@ export function Privacy() {
           to enforce rate and connection limits that protect pads from abuse.
           We do not build profiles from this and operational logs are
           short-lived.
+        </p>
+        <p>
+          The report form uses Cloudflare Turnstile to check that submissions
+          come from a person. Cloudflare receives your IP address for this check;
+          Padline does not store it with the report.
         </p>
       </Section>
       <Section title="Search engines">

@@ -373,7 +373,9 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       if (!found) return Response.json({ error: "not-found" }, { status: 404 });
       return Response.json({
         case: found,
-        reports: this.reportsFor(id),
+        reports: this.reportsFor(id).map(({ contact, ...report }) =>
+          c.req.query("includeContact") === "1" ? { ...report, contact } : report,
+        ),
         evidence: this.evidenceFor(id),
         actions: this.actionsFor(id),
       });
@@ -671,11 +673,14 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
       sha256Hex(textBytes),
     ]);
     const id = this.ctx.storage.transactionSync(() => {
+      // Capture may have started before closure and awaited the room/hashes.
+      // Read the current closure time in the same transaction as the insert.
+      const closedAt = this.caseById(caseId)?.closedAt ?? null;
       const evidenceId = this.sql
         .exec(
           `INSERT INTO evidence
-             (case_id, slug, captured_at, doc_bytes, doc_sha256, text_bytes, text_sha256, meta_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+             (case_id, slug, captured_at, doc_bytes, doc_sha256, text_bytes, text_sha256, meta_json, retain_until)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
           caseId,
           slug,
           Date.now(),
@@ -684,13 +689,18 @@ export class ModerationLedger extends DurableObject<LedgerEnv> {
           textBytes.byteLength,
           textSha256,
           JSON.stringify(meta),
+          closedAt === null
+            ? null
+            : closedAt + MODERATION_PROFILE.evidenceRetentionDays * DAY_MS,
         )
         .one().id as number;
       this.writeChunks(evidenceId, "doc", docBytes);
       this.writeChunks(evidenceId, "text", textBytes);
       return evidenceId;
     });
-    return this.evidenceById(id);
+    const evidence = this.evidenceById(id)!;
+    if (evidence.retainUntil !== null) await this.ensureRetentionAlarm();
+    return evidence;
   }
 
   private writeChunks(evidenceId: number, part: string, bytes: Uint8Array): void {

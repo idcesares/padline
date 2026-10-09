@@ -177,7 +177,8 @@ links **and** blocks its address so it can't be refilled. See
 
 ### 5. Reply and close
 
-Reply to the reporter if they left a contact (mention their reference code if
+Use `case <id> --include-contact` to retrieve contact information when you need
+to reply. Reply to the reporter if they left a contact (mention their reference code if
 they used the form). Then close:
 
 ```sh

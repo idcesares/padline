@@ -32,7 +32,7 @@ const uniqueSlug = (prefix: string) =>
 type OpenedCase = { case: CaseRecord; created: boolean; reportId: number };
 type CaseTimeline = {
   case: CaseRecord;
-  reports: ReportRecord[];
+  reports: Array<Omit<ReportRecord, "contact"> & { contact?: string | null }>;
   actions: ActionRecord[];
 };
 
@@ -149,7 +149,6 @@ describe("Moderation ledger", () => {
     expect(timeline.reports[0]).toMatchObject({
       source: "email",
       description: "link farm",
-      contact: null,
     });
     expect(timeline.actions.map((action) => action.action)).toEqual([
       "case-opened",
@@ -724,6 +723,34 @@ describe("Evidence", () => {
     await expect(response.json()).resolves.toEqual({ error: "capture-not-allowed" });
   });
 
+  it("expires a capture whose hashing overlaps case closure", async () => {
+    const slug = uniqueSlug("evidence-closing");
+    const { case: opened } = await openedCase({ slug, category: "spam" });
+    const ledger = env.ModerationLedger.getByName("ledger");
+    const evidence = await runInDurableObject<ModerationLedger, EvidenceRecord>(
+      ledger,
+      async (instance, state) => {
+        // Begin sealing on an open case, then close while hashing is awaiting.
+        const sealing = (instance as unknown as {
+          sealEvidence(id: number, slug: string, data: Record<string, unknown>): Promise<EvidenceRecord>;
+        }).sealEvidence(opened.id, slug, { doc: null, text: "late capture" });
+        state.storage.sql.exec(
+          "UPDATE cases SET status = 'closed', closed_at = 1 WHERE id = ?",
+          opened.id,
+        );
+        return await sealing;
+      },
+    );
+    expect(evidence.retainUntil).toBe(
+      1 + MODERATION_PROFILE.evidenceRetentionDays * 24 * 60 * 60 * 1000,
+    );
+    expect(await runDurableObjectAlarm(ledger)).toBe(true);
+    const expired = await adminGet<{ evidence: EvidenceRecord }>(`/evidence/${evidence.id}`);
+    expect(expired.evidence.deletedAt).not.toBeNull();
+    const timeline = await adminGet<CaseTimeline>(`/cases/${opened.id}`);
+    expect(timeline.actions.some((action) => action.action === "evidence-expired")).toBe(true);
+  });
+
   it("keeps evidence while its case is open and expires it after closing, unless held", async () => {
     const ledger = env.ModerationLedger.getByName("ledger");
     const capture = async (contact?: string) => {
@@ -790,7 +817,7 @@ describe("Evidence", () => {
     expect(response.status).toBe(200);
     await response.body?.cancel();
 
-    const expiredTimeline = await adminGet<CaseTimeline>(`/cases/${expiring.caseId}`);
+    const expiredTimeline = await adminGet<CaseTimeline>(`/cases/${expiring.caseId}?includeContact=1`);
     expect(expiredTimeline.reports[0].contact).toBeNull();
     const logged = expiredTimeline.actions.map((entry) => entry.action);
     expect(logged).toContain("evidence-expired");
@@ -1108,7 +1135,11 @@ describe("Public reports", () => {
       reports: 2,
     });
 
-    const timeline = await adminGet<CaseTimeline>(`/cases/${cases[0].id}`);
+    const withheld = await adminGet<CaseTimeline>(`/cases/${cases[0].id}`);
+    for (const report of withheld.reports) expect(report).not.toHaveProperty("contact");
+    const notOptedIn = await adminGet<CaseTimeline>(`/cases/${cases[0].id}?includeContact=0`);
+    for (const report of notOptedIn.reports) expect(report).not.toHaveProperty("contact");
+    const timeline = await adminGet<CaseTimeline>(`/cases/${cases[0].id}?includeContact=1`);
     expect(timeline.reports[0]).toMatchObject({
       reference,
       source: "form",

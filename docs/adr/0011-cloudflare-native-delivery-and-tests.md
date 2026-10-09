@@ -57,7 +57,8 @@ connecting socket is already present in `getConnections()` implicit.
   Content Security Policy remain dynamic.
 - Lazy-load the landing, legal, and pad route modules. The editor graph is
   fetched only when a visitor opens a pad.
-- Use `@cloudflare/vitest-pool-workers` for room integration tests. Tests run in
+- Use `@cloudflare/vitest-plugin` (renamed from `@cloudflare/vitest-pool-workers`
+  upstream; dependency updated on 2026-10-09) for room integration tests. Tests run in
   `workerd` with the configured SQLite-backed Durable Object and cover the HTTP
   interface, WebSocket admission, and state reconstruction after eviction.
 - Run WebSocket tests with one non-isolated Vitest worker, matching the current

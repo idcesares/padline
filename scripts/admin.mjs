@@ -15,7 +15,7 @@ const USAGE = `Usage:
   node scripts/admin.mjs <host> case open <slug> --category <id>
         [--kind violation|removal-request|appeal|authority-request]
         [--source email|cloudflare|authority|other] [--note "..."] [--contact "..."]
-  node scripts/admin.mjs <host> case <id>
+  node scripts/admin.mjs <host> case <id> [--include-contact]
   node scripts/admin.mjs <host> case <id> review|capture
   node scripts/admin.mjs <host> case <id> freeze|unfreeze|disconnect|block|unblock|purge|dismiss|close --reason "..."
         [--legal-basis "..."] [--block]      (--block applies to purge)
@@ -302,7 +302,7 @@ switch (command) {
     if (!Number.isInteger(id)) die(USAGE);
 
     if (!verb) {
-      const data = expectOk(await call(`/cases/${id}`));
+      const data = expectOk(await call(`/cases/${id}${flags["include-contact"] ? "?includeContact=1" : ""}`));
       printCase(data.case);
       console.log("\nNotices:");
       for (const report of data.reports) {

@@ -20,7 +20,7 @@ healthy. Padline is one Cloudflare Worker and runs on the free tier.
 
 ## What you need
 
-- **Node.js 22 or newer** and npm.
+- **Node.js 24 LTS** and npm (the repository's `.nvmrc` selects Node 24).
 - **A Cloudflare account** (free) — only when you deploy. Local development needs
   no account.
 - **A domain on Cloudflare** if you want a custom address; otherwise you get a
@@ -172,7 +172,8 @@ start again. The port is pinned to `127.0.0.1:8788` because Windows reserves
 ports 5142–5241 — don't change it back.
 
 **`npm install` fails on peer dependencies.** `.npmrc` sets `legacy-peer-deps`;
-make sure you're installing from the project root.
+make sure you're installing from the project root. `y-partyserver` still declares
+Workers types v4 while Wrangler requires v5; this workaround remains necessary.
 
 **`npm run build` fails with `EPERM` on `dist\padline\.wrangler` (Windows).** A
 `workerd` process from an earlier test run is locking it. Stop `workerd`

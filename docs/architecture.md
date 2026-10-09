@@ -152,6 +152,10 @@ sequenceDiagram
 | `evidence` | Capture records: sizes, SHA-256s, pad state, retention, hold |
 | `evidence_chunks` | Document and text bytes in 1 MB chunks, deleted at expiry |
 
+Evidence insertion reads the case's current closure time in the same SQLite
+transaction. A capture that finishes after closure inherits that closure's
+retention deadline and schedules a retention check.
+
 **Browser** — identity, theme, status-line preference, PIN sessions
 (localStorage), and an offline copy of each visited pad (IndexedDB).
 
