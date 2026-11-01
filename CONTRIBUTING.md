@@ -1,72 +1,51 @@
 # Contributing to Padline
 
-Thanks for your interest! Padline is intentionally small and sharply scoped — this guide tells you how to get set up, what the conventions are, and how to land a change.
+Padline is intentionally small and sharply scoped. This guide covers setup, conventions and how to land a change.
 
 ## Getting set up
 
-Use Node.js 24 LTS and npm. `.nvmrc` selects Node 24, and the Node types
-match that runtime. After dependency updates, reinstall Playwright's Chromium
-with the command below.
+Use Node.js 24 LTS and npm (`.nvmrc` selects Node 24).
 
 ```sh
 git clone https://github.com/idcesares/padline.git
 cd padline
 npm install
-npx playwright install chromium
 npm run dev      # http://127.0.0.1:8788
 ```
 
-Everything runs locally — the Worker, the Durable Objects, and SQLite storage are all emulated by `wrangler` via the Vite plugin. No Cloudflare account is needed until you deploy.
+Everything runs locally: the Worker, the Durable Objects and their SQLite storage are emulated by `wrangler` through the Vite plugin. No Cloudflare account is needed until you deploy.
 
-Local secrets live in `.dev.vars` (gitignored): `ADMIN_SECRET=<any long value>` for the moderation surface, and Turnstile's public always-pass test keys, `TURNSTILE_SECRET=1x0000000000000000000000000000000AA` and `TURNSTILE_SITE_KEY=1x00000000000000000000AA`, so the `/report` form works against the dev server (its widget loads from `challenges.cloudflare.com`, so the browser test for it needs network access). Never deploy the test secret; `scripts/api-smoke.mjs` fails a remote host that accepts Turnstile's test token.
+## Read first
 
-## Before you code: read the docs
+- [`CONTEXT.md`](CONTEXT.md): the domain model and vocabulary (**pad**, **slug**, **room**, **identity**, **presence**, **report**, **block**). Use these words in code, comments and PRs.
+- [`docs/adr/`](docs/adr/): one ADR per non-obvious decision. If your change contradicts one, either fit inside it or propose a new ADR that supersedes it.
+- [`docs/design/mockup.html`](docs/design/mockup.html): the approved design. Match it; do not redesign.
 
-The repo is documentation-first. Two files tell you almost everything:
-
-- [`CONTEXT.md`](CONTEXT.md) — the domain model and ubiquitous language (**pad**, **slug**, **room**, **snapshot**, **PIN**, **read-only link**, **identity**, **presence**). Use these words in code, comments, and PRs.
-- [`docs/adr/`](docs/adr/) — Architecture Decision Records. Every non-obvious choice has one. If your change contradicts an ADR, the PR should either fit inside it or propose a new ADR that supersedes it.
-
-The product invariants in `CONTEXT.md` (URL-first, no friction, real-time by default, local resilience, not trapped, bounded blast radius) are non-negotiable — features that break them won't be merged.
+The product invariants in `CONTEXT.md` (URL-first, no friction, public by design, real-time by default, local resilience, not trapped, bounded blast radius) are non-negotiable.
 
 ## Making a change
 
 1. **Branch** off `main`: `git checkout -b feat/your-thing` (or `fix/`, `docs/`, `chore/`).
-2. **Code.** Keep the style of the surrounding code. TypeScript is `strict`; the build fails on unused locals/parameters.
-3. **Verify**:
+2. **Code.** Keep the style of the surrounding code. TypeScript is `strict`.
+3. **Verify:**
    ```sh
-   npm test                      # Workers-runtime integration tests
-   npm run test:e2e              # Browser pad-session characterization tests
-   npm run build                 # typecheck + build must pass
-   npm run dev                   # in one terminal
-   node scripts/api-smoke.mjs    # in another — every check must pass
+   npm test          # slug unit tests and Workers-runtime integration tests
+   npm run build     # typecheck and build must pass
    ```
-   The smoke suite covers the admin takedown surface too, reading
-   `ADMIN_SECRET` from the environment or `.dev.vars`. It fails when it can
-   find neither, so a run cannot report full coverage while leaving takedown
-   untested; pass `--no-admin` when you mean to skip it.
-   If you changed a room invariant, add a focused test under `test/`; these run
-   against the real Cloudflare Workers runtime, Durable Object storage, and
-   WebSocket implementation. Add or update `scripts/api-smoke.mjs` when the
-   behavior also needs verification against a running or deployed instance.
-   Browser-side pad-session behavior belongs under `e2e/`; Playwright runs it
-   through the public pad URL against the same local Worker and real browser
-   storage and WebSocket implementations.
-4. **Document.** New invariant or non-obvious decision → new ADR (copy the format of an existing one, numbered sequentially). New domain term → add it to `CONTEXT.md`. Changed behavior, endpoint, command, setting, or limit → update the page that describes it (the [docs index](docs/README.md) lists them; AGENTS.md has the exact mapping).
-5. **Open a PR** with a clear description of what and why. Commit messages follow the `type: summary` convention (`feat:`, `fix:`, `docs:`, `chore:`).
+   Room behavior belongs under `test/`; those tests run against the real Workers runtime, Durable Object storage and WebSocket implementation. There is no browser test suite yet, so check UI changes against the mockup by eye.
+4. **Document.** A non-obvious decision gets an ADR (next number, same format). A new domain term goes in `CONTEXT.md`. Changed behavior, endpoint, setting or limit updates the page that describes it (see the table in [`docs/README.md`](docs/README.md)).
+5. **Open a PR** that says what and why. Commits follow `type: summary` (`feat:`, `fix:`, `docs:`, `chore:`).
 
 ## What makes a good contribution
 
-- **Small and focused** — one concern per PR.
-- **Server-enforced** — anything security-relevant (auth, limits, read-only) must be enforced in the Durable Object, never only in the UI (see ADR-0005).
-- **Free-tier friendly** — Padline runs on Cloudflare's free tier by design; changes shouldn't require paid features.
-- **Cloudflare-native verification** — room behavior belongs in the Workers
-  Vitest pool; use mocks only for code that never touches a runtime interface.
-- **Deferred scope stays deferred** — images/attachments, accounts, comments, and AI features are explicitly phase 2+ (see `CONTEXT.md`). Open an issue to discuss before building these.
+- **Small and focused.** One concern per PR.
+- **Server-enforced.** Limits and blocks are enforced in the room, never only in the UI.
+- **Free-tier friendly.** Changes should not require paid Cloudflare features.
+- **Deferred scope stays deferred.** Accounts, uploads, comments and history are out of v1. Open an issue before building them.
 
-## Reporting bugs & proposing features
+## Bugs and features
 
-Open a GitHub issue with steps to reproduce (bugs) or the problem you're trying to solve (features). For security vulnerabilities, **do not open a public issue** — see [SECURITY.md](SECURITY.md).
+Open a GitHub issue with steps to reproduce (bugs) or the problem you want solved (features). For security vulnerabilities, **do not open a public issue**: see [SECURITY.md](SECURITY.md).
 
 ## License
 

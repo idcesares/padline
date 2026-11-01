@@ -1,37 +1,36 @@
-# Padline — Domain Context
+# Padline: Domain Context
 
-Padline is a URL-first, no-account, real-time collaborative pad. Visiting a URL *is* opening (or creating) a document. A pad is a lightweight Notion-style page, not a plain text file.
+Padline is a public, no-account, real-time notepad. Opening an address *is* opening (or creating) a pad: type, and everyone on that address sees it live. Pads are public by design (ADR-0001).
 
 ## Ubiquitous language
 
-- **Pad** — one collaborative document, identified by its slug. The unit of everything: sharing, storage, history, protection.
-- **Slug** — the path segment that identifies a pad (`/mellow-otter-42`). Validated (length, charset, reserved words). The slug *is* the pad's identity; there is no separate ID.
-- **Room** — the server-side authority for one pad: a Cloudflare Durable Object (via y-partyserver) holding live connections, Yjs state, and SQLite persistence. One pad ↔ one room.
-- **Snapshot** — a compact, restorable capture of a pad's content, taken on an idle trigger after edits. The unit of history. Restoring a snapshot is itself an edit (undoable), never a rollback.
-- **PIN** — an optional per-pad secret that gates *everything* (view and edit), enforced server-side before any document bytes are sent. Stored hashed in the room.
-- **Read-only link** — a secondary URL with a random token that connects in view-only mode. Enforced by the room (writes refused on that connection), not by UI.
-- **Identity** — a visitor's auto-generated name + color (e.g. "Amber Fox"), stored in localStorage, editable via the presence avatar popover. Not an account; purely for presence.
-- **Presence** — who is in the pad right now: avatars, live cursors, selections. Carried over Yjs awareness.
-- **Takedown** — operator enforcement on a reported pad (ADR-0010): *purge* wipes content, snapshots, and secrets; *block* makes the slug refuse access and show a removed notice instead of minting a fresh pad; *freeze* keeps a pad readable but refuses every edit. The room stays the authority for all three. Secret-gated; there is no pad registry or dashboard.
-- **Report** — a notice that a pad breaks the Content Policy or the law, from the public report form, email, Cloudflare, or an authority (ADR-0018). Never proof that the pad exists.
-- **Case** — the unit of moderation: one slug's reports, reviews, decisions, and actions, from the first notice to closing. `violation`, `removal-request`, `appeal`, or `authority-request`; `grave` or `standard` priority.
-- **Moderation ledger** — the single Durable Object that records reports, cases, evidence, and an append-only, hash-chained action log. It records and orchestrates takedowns; it never decides whether a pad is blocked.
-- **Moderation profile** — the one module holding an instance's jurisdiction-specific moderation values: jurisdiction, operator contact, which categories are grave, review targets, retention periods. The mechanism is shared; the profile is local. The repository ships only Brazil's, for `padline.page` (ADR-0018).
-- **Evidence** — a sealed copy of a pad's persisted state captured during review, before anything destructive; hashed, retained for a bounded period, never served to visitors.
+- **Pad**: one shared document, identified by its slug. The unit of everything: sync, storage, size limit, moderation.
+- **Slug**: the path segment that identifies a pad (`/mellow-otter-42`). Flat, lowercase letters, digits and hyphens, 1 to 64 characters, accents folded (ADR-0003). The slug *is* the pad's identity; there is no separate ID.
+- **Room**: the server-side authority for one pad: a Cloudflare Durable Object (via y-partyserver) holding live connections, Yjs state and SQLite persistence. One pad, one room.
+- **Identity**: a visitor's auto-generated name and colour (for example "Amber Fox"), kept in localStorage. Not an account; used only for presence.
+- **Presence**: who is in the pad right now: avatars, coloured cursors and selections, carried over Yjs awareness.
+- **Report**: a notice from the public report page that a pad should be looked at. Never proof that the pad exists.
+- **Block**: the operator action that empties a pad and makes its slug show a removed notice (category and date only). The room enforces it (ADR-0002).
+- **Pad index**: the small table of pads (slug, size, created, last edit, edit count) behind the admin page.
 
 ## Product invariants
 
-1. **URL-first**: visiting `/:slug` opens the pad; if it doesn't exist it becomes an editable empty pad. A room is not persisted until the first keystroke (typos and crawlers mint nothing).
-2. **No friction**: no account, no onboarding. The landing page's default action generates a random readable slug; memorable custom paths remain first-class.
-3. **Real-time by default**: simultaneous editing, cursors, presence — always on.
-4. **Local resilience**: y-indexeddb caches every visited pad; brief disconnections lose nothing and merge on reconnect. A sync-status indicator is always visible. (Not a PWA — the app shell requires network.)
-5. **Not trapped**: Markdown export (copy + download) ships from v1.
-6. **Bounded blast radius**: every pad enforces a document size cap (~2MB Yjs state), connection caps, and message size limits inside its room.
+1. **URL-first**: visiting `/:slug` opens the pad; an unknown slug becomes an editable empty pad. Nothing is stored or indexed until the first keystroke.
+2. **No friction**: no account, no onboarding. The landing page is one input plus a random-address button.
+3. **Public by design**: anyone with the address can read and edit; the operator can see every pad. The site says so in one line.
+4. **Real-time by default**: simultaneous editing and presence are always on.
+5. **Local resilience**: y-indexeddb caches every visited pad; a dropped connection loses nothing and merges on reconnect. A sync-status indicator is always visible.
+6. **Not trapped**: download as `.md` or `.txt` from v1.
+7. **Bounded blast radius**: about 1 MB per pad, about 50 connections per pad and a message size limit, all enforced in the room.
 
-## Stack (decided — see ADRs for why)
+## Stack (see ADR-0001)
 
-React 19 · Vite SPA + React Router · Tailwind v4 · shadcn/ui · BlockNote · Yjs · y-indexeddb · Hono · Cloudflare Workers · Durable Objects (SQLite-backed) · y-partyserver · WebSocket hibernation. One Worker, one `wrangler deploy`, starting on the free tier.
+Vite and plain TypeScript, hand-written CSS · CodeMirror 6 · Yjs · y-codemirror.next · y-indexeddb · Cloudflare Workers · Durable Objects (SQLite-backed) · y-partyserver · WebSocket hibernation. One Worker, one `wrangler deploy`, starting on the free tier.
 
-## Explicitly deferred (phase 2+)
+## Design spec
 
-Hosted images/attachments (bundled with per-pad storage quotas — reporting, Turnstile, and case handling come first for text pads, see ADR-0018), Markdown import, expiration ("self-destruct pads" as a feature, not hygiene), accounts & private pads, CI/CD pipeline, comments, AI features.
+`docs/design/mockup.html` is the approved clickable mockup: landing, editor, preview, share sheet, every state, and the admin page.
+
+## Deferred (not v1)
+
+Version history, accounts, images and uploads, comments, command palette, idle cleanup.

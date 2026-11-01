@@ -1,222 +1,91 @@
 # Architecture
 
-How Padline fits together, end to end. For *why* each piece is the way it is,
-follow the ADR links; for exact names and codes, see the
-[reference](README.md).
+How Padline is built. For why, see the [ADRs](adr/); for exact names and codes, see the [reference](reference/).
 
-- [The big picture](#the-big-picture)
-- [Worker modules](#worker-modules)
-- [Flow: opening and editing a pad](#flow-opening-and-editing-a-pad)
-- [Flow: a PIN-protected pad](#flow-a-pin-protected-pad)
-- [Flow: a report becomes a takedown](#flow-a-report-becomes-a-takedown)
-- [Where data lives](#where-data-lives)
-- [Security boundaries](#security-boundaries)
-- [Front end](#front-end)
-- [How it's tested](#how-its-tested)
-- [Project structure](#project-structure)
+## Overview
 
-## The big picture
-
-The whole product is **one Cloudflare Worker** with two kinds of Durable Object
-([ADR-0003](adr/0003-selfhosted-durable-objects-y-partyserver.md),
-[ADR-0011](adr/0011-cloudflare-native-delivery-and-tests.md)).
+One Cloudflare Worker serves the static assets and a small HTTP surface, and routes WebSockets to one Durable Object per pad. The browser is a plain TypeScript app with no framework.
 
 ```mermaid
 flowchart LR
-    B["Browser<br/>React · BlockNote · Yjs"] -->|WebSocket: Yjs sync + presence| W[Worker]
-    B -->|HTTP: PIN, links, history| W
-    B -->|POST /api/reports + Turnstile| W
-    O["Operator<br/>scripts/admin.mjs"] -->|/api/admin/* + ADMIN_SECRET| W
-    W -->|one per pad| R[("PadRoom<br/>SQLite")]
-    W -->|single instance| L[("ModerationLedger<br/>SQLite")]
-    L -->|admin ops via stub| R
-    W -->|/assets| A[Static assets]
-    B <-->|offline cache| I[(IndexedDB)]
+    B["Browser<br/>CodeMirror + Yjs"] -->|"WebSocket"| W[Worker]
+    W --> R["PadRoom<br/>(one Durable Object per slug)"]
+    W --> A[Static assets]
+    B <--> IDB[(IndexedDB)]
 ```
 
-- **A pad is a room.** Visiting `/:slug` loads the app, which opens a WebSocket
-  to that pad's `PadRoom`. One pad ↔ one room ↔ one Durable Object.
-- **The ledger is the operator's side.** Reports, cases, evidence, and the action
-  log live in a single `ModerationLedger`. It is the **only** caller of a room's
-  admin operations ([ADR-0018](adr/0018-notice-and-action-moderation.md)).
-- **There is no list of pads.** Durable Objects can't be enumerated, and no index
-  is kept on purpose ([ADR-0010](adr/0010-reactive-takedown-admin-ops.md)).
+## Modules
 
-## Worker modules
-
-Each module has one owner and one reason to change
-([ADR-0015](adr/0015-room-capability-and-access-security-modules.md),
-[ADR-0016](adr/0016-room-security-owns-access-credentials.md)).
-
-| Module | Owns |
+| Path | Job |
 | --- | --- |
-| `worker/index.ts` | Routing (assets, `/api`, `/parties`, crawlers, canonical host), security headers, WebSocket admission, connection and message caps, refusing public `op=admin-*`. |
-| `worker/room-capabilities.ts` | A room's HTTP operations and their precedence: admin concealment → block → ordinary ops. The `blocked` and `frozen` records and the public statement of reasons. |
-| `worker/room-security.ts` | Every access credential: PIN hashing, sessions, backoff, read-only tokens. |
-| `worker/room-persistence.ts` | The document, snapshots, the size-cap freeze, purge, and evidence reads ([ADR-0014](adr/0014-room-owns-persisted-pad-state.md)). |
-| `worker/admin-auth.ts` | The constant-time `ADMIN_SECRET` check, shared by room and ledger. |
-| `worker/moderation-ledger.ts` | Reports, cases, the hash-chained action log, evidence and retention, stats, exports; orchestrates room admin ops. |
-| `worker/turnstile.ts` | Server-side Turnstile verification. |
-| `worker/bytes.ts` | Base64 and SHA-256 helpers for evidence. |
-| `src/lib/moderation-profile.ts` | Jurisdiction-specific moderation values, shared by Worker and app. |
-| `src/lib/slug.ts` | Slug rules, shared by Worker and app. |
+| `shared/slug.ts` | Normalize and validate slugs, the reserved list, random slugs. Used by client and Worker. |
+| `shared/limits.ts` | Every limit, close code and custom message, in one module. |
+| `worker/index.ts` | Entry. Host redirect, `/parties` routing, `/api/health`, crawler previews, security headers, the HTML shell. |
+| `worker/pad-room.ts` | `PadRoom`: connections, the Yjs document, persistence, limits, block enforcement, `?op=status`. |
+| `worker/moderation.ts` | `/api/report` and the operator API under `/api/admin/*`: validation, D1 reads and writes, calls to the room. |
+| `worker/access.ts` | Cloudflare Access JWT verification (RS256, cached JWKS); fails closed. |
+| `shared/moderation.ts` | Report categories, field limits, admin filters. |
+| `migrations/` | D1 schema: `pads`, `reports`, `actions`. |
+| `worker/moderation-ledger.ts` | Inert placeholder for an applied migration; see [Configuration](reference/configuration.md#migrations). |
+| `src/main.ts` | Router: landing or pad, by `location.pathname`. Disposes the previous view. |
+| `src/landing.ts` | The landing page: address input, "Opens as ..." preview, random address, recent pads. |
+| `src/editor.ts` | The pad: CodeMirror, Yjs, sync provider, presence, status, banners, menu, share dialog. |
+| `src/preview.ts` | Markdown preview: the editor's Lezer parse rendered with DOM calls and `textContent` only, never as HTML. |
+| `src/about.ts` | The static About page at `/about`. |
+| `src/report.ts` | The public report form at `/report`. |
+| `src/admin.ts` | The operator page at `/admin`, loaded as a separate chunk. |
+| `src/notice.ts` | Full-screen states: reserved or invalid address, busy, removed. |
+| `src/prefs.ts` | Theme, language, identity and recent pads, in localStorage. |
+| `src/i18n.ts` | PT-BR and EN strings. |
+| `src/style.css` | All styles, as design tokens plus components. |
 
-## Flow: opening and editing a pad
+## Flows
 
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant W as Worker
-    participant R as PadRoom
-    B->>W: GET /:slug
-    W-->>B: app shell
-    B->>R: GET ?op=info
-    R-->>B: { pinProtected, frozen? } or { removed }
-    B->>R: WebSocket (admission: slug valid? blocked? caps? credential?)
-    R-->>B: Yjs sync (document + presence)
-    B->>R: edits (Yjs updates)
-    Note over R: debounced save (2 s, max 10 s)<br/>snapshot at most once a minute<br/>nothing stored while the pad is empty
-```
+### Opening a pad
 
-- The browser renders from its IndexedDB copy immediately, then merges with the
-  room ([ADR-0013](adr/0013-route-owned-pad-session.md)).
-- Restoring a snapshot replaces the document **as a new edit**
-  ([ADR-0006](adr/0006-snapshot-history.md)).
-- Over 2 MB, the room stops persisting and refuses edits from every connection.
+1. The Worker serves `index.html` for any page route (assets are served by Cloudflare directly, [ADR-0004](adr/0004-cloudflare-native-delivery-and-tests.md)).
+2. `main.ts` normalizes the path into a slug. A reserved or invalid slug shows a notice; a path that differs from its normal form is rewritten in place.
+3. `editor.ts` creates a `Y.Doc`, loads it from IndexedDB (`padline:<slug>`), mounts CodeMirror bound to the `text` Y.Text, and connects a `YProvider` to `/parties/pad-room/<slug>`.
+4. The room validates the slug, checks for a block, checks the connection cap, then runs the standard Yjs sync handshake.
 
-## Flow: a PIN-protected pad
+### Saving
 
-1. `info` says `pinProtected: true`; the app shows the PIN prompt (or uses a stored
-   session).
-2. `verify-pin` checks the PIN against its salted PBKDF2 hash, applies backoff, and
-   returns a session token ([ADR-0005](adr/0005-pin-gates-everything-readonly-links.md),
-   [ADR-0009](adr/0009-brute-force-and-token-lifetime-hardening.md)).
-3. The WebSocket connects with `?token=`; without a valid one the room closes
-   `4401` **before sending any document bytes**.
-4. A read-only link connects with `?ro=` instead; the room marks that connection
-   read-only and drops its writes.
+The room persists the full document state under the `doc` key, debounced (about 2 seconds, at most every 10). An empty document is never persisted, so a typo or a crawler creates nothing. The client's status pill reads "saving" for a moment after a local edit, then "saved".
 
-## Flow: a report becomes a takedown
+### Hitting the size limit
 
-```mermaid
-sequenceDiagram
-    participant V as Visitor
-    participant W as Worker
-    participant T as Turnstile
-    participant L as Ledger
-    participant O as Operator CLI
-    participant R as PadRoom
-    V->>W: POST /api/reports
-    W->>T: siteverify
-    T-->>W: success
-    W->>L: submitReport (RPC)
-    L-->>V: 202 { reference } (same for every valid report)
-    O->>L: GET /api/admin/cases
-    O->>L: POST /cases/:id/actions { remove }
-    L->>L: append intent (capture)
-    L->>R: admin-evidence (stub)
-    L->>L: seal evidence · append outcome
-    L->>L: append intent (purge)
-    L->>R: admin-purge { block, category }
-    R-->>R: block, close sockets 4404, wipe
-    L->>L: append outcome
-    L-->>O: case, actions, evidence
-```
+On save, if the state exceeds 1 MB the room stops persisting, stores `docOverCap`, and broadcasts `pad-full`; every client shows a banner. Edits keep working in the warm room and in each device cache. When a later save fits again the room persists, clears the flag, and broadcasts `pad-ok`. Past twice the limit the room becomes read-only to stop unbounded growth. See [ADR-0003](adr/0003-pad-lifecycle-and-limits.md).
 
-- The public `/parties` route refuses every `admin-*` op, so a takedown **can only**
-  happen through this path.
-- If the ledger is interrupted between intent and outcome, `reconcile` asks the
-  room what's true and records it.
-- The block lives in the room's storage. The ledger never answers "is this pad
-  blocked?" on its own.
+### Offline
 
-## Where data lives
+IndexedDB holds the document, so edits made offline are kept and merge on reconnect. The provider reconnects on its own; the status pill and an offline banner say so.
 
-**`PadRoom` (one per pad)**
+### Blocking
 
-| Key / table | Holds |
-| --- | --- |
-| `doc` | The Yjs document (≤ 2 MB) |
-| `snapshots` table | `id, created_at, size, data` — newest 100 |
-| `lastSnapshotAt`, `docOverCap` | Snapshot cadence; the size-cap freeze marker |
-| `pin`, `sessions`, `pinFails`, `roToken` | Salted PIN hash, session grant times, backoff counter, read-only token |
-| `blocked`, `frozen` | Enforcement records `{ at, reason?, category? }` |
+A block is a record under the `blocked` key. The room refuses new connections to a blocked slug with close code `4404`, and the client then asks `?op=status` for the category and date to show a removed notice. Nothing outside the room decides whether a pad is blocked ([ADR-0002](adr/0002-lean-moderation.md)).
 
-**`ModerationLedger` (one instance)**
+### Pad index and admin
 
-| Table | Holds |
-| --- | --- |
-| `cases` | One per pad and kind while open: status, priority, timestamps, decision, legal basis |
-| `reports` | Every notice: reference, category, description, contact (cleared after retention), source |
-| `actions` | Append-only, hash-chained log; never updated or deleted |
-| `evidence` | Capture records: sizes, SHA-256s, pad state, retention, hold |
-| `evidence_chunks` | Document and text bytes in 1 MB chunks, deleted at expiry |
+After the first non-empty save the room writes one row to the D1 `pads` table (slug, size, created, last edit, edit count), then at most once a minute, with an alarm to flush the last change. The index never holds content. The admin page, behind Cloudflare Access, lists pads from D1 and asks the room for a short excerpt. Clear and block go to the room first; the Worker then writes the `actions` row and the report updates in one D1 batch. A visitor's report goes to `reports` and answers the same way whether or not the pad exists.
 
-Evidence insertion reads the case's current closure time in the same SQLite
-transaction. A capture that finishes after closure inherits that closure's
-retention deadline and schedules a retention check.
+## Storage
 
-**Browser** — identity, theme, status-line preference, PIN sessions
-(localStorage), and an offline copy of each visited pad (IndexedDB).
-
-Nothing stores IP addresses. The Worker reads the connecting IP only to enforce
-the per-IP connection cap and to forward it to Turnstile.
+| Where | Key | Holds |
+| --- | --- | --- |
+| Durable Object storage | `doc` | Full Yjs state as one update |
+| Durable Object storage | `docOverCap` | `true` while the pad is over the limit |
+| Durable Object storage | `blocked` | `{ at, category?, reason? }` when blocked |
+| IndexedDB (browser) | `padline:<slug>` | The local copy of a pad |
+| localStorage (browser) | prefs keys | Theme, language, identity, recent pads |
 
 ## Security boundaries
 
-| Boundary | Enforced by |
-| --- | --- |
-| No document bytes before authorization | WebSocket admission in `PadRoom.onConnect`; `info` is the only pre-auth op. |
-| Read-only really means read-only | `PadRoom.isReadOnly` on every message. |
-| PINs can't be read or brute-forced cheaply | PBKDF2 (100,000 iterations), per-pad backoff, edge rate limits. |
-| The operator can always enforce | Admin ops read through PINs; purge clears every credential. |
-| Admin surface invisible without the secret | Constant-time compare; every failure answers `unknown-op`. |
-| No unrecorded takedown | Public route refuses `admin-*`; the ledger records intent before calling the room. |
-| Tampering is detectable | SHA-256 hash chain over the action log; `verify-chain`. |
-| Reports can't probe pads or flood storage | Turnstile first; identical `202` for every valid report; edge rate limits. |
-| Browser hardening | CSP (only Turnstile as a third-party origin), HSTS, `nosniff`, `no-referrer`, `frame-ancestors 'none'`. |
+- Pads are public. The boundary that matters is the room: it enforces slug validity, blocks, the connection cap, the message size and the document size.
+- Room `admin-*` operations are refused on the public `/parties` route by the Worker.
+- `/admin` and `/api/admin/*` require a valid Access JWT checked in the Worker, and same-origin `Origin` on `POST`. With the Access variables empty they answer `403`.
+- The Content Security Policy forbids inline scripts; styles and fonts may come from Google Fonts. HSTS and the CSP are set in production only.
+- Pad content never appears in logs or in link previews: the preview for a crawler is generic.
 
-Accepted trade-offs are listed in [SECURITY.md](../SECURITY.md).
+## Tests
 
-## Front end
-
-- **React 19 SPA** with React Router; landing, pad, policy, and report pages load
-  as separate chunks ([ADR-0001](adr/0001-react-spa-with-shadcn.md)).
-- **BlockNote** editor over Yjs; image, file, video, and audio blocks are disabled
-  ([ADR-0002](adr/0002-blocknote-editor.md), [ADR-0007](adr/0007-defer-images-with-moderation-kit.md)).
-- **`src/routes/pad-session.tsx`** owns one pad visit: access resolution (PIN,
-  removed, frozen), the provider, offline cache, and the editor
-  ([ADR-0013](adr/0013-route-owned-pad-session.md)).
-- **Design system:** Tailwind v4 + shadcn/ui; the editor surface uses the same
-  tokens ([ADR-0017](adr/0017-editor-surface-owns-its-design-tokens.md)).
-
-## How it's tested
-
-| Layer | Command | What it proves |
-| --- | --- | --- |
-| Workers runtime | `npm test` | Rooms and the ledger in real `workerd`: HTTP, WebSockets, SQLite, eviction, alarms. Turnstile is answered by Miniflare's outbound service. |
-| Browser | `npm run test:e2e` | Pad sessions, PINs, read-only links, offline cache, freeze and removal screens, and the report form, in real Chromium. |
-| Smoke | `node scripts/api-smoke.mjs [host]` | A running or deployed instance end to end, including the takedown lifecycle. |
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for what a change must pass.
-
-## Project structure
-
-```
-├── src/                        # React app
-│   ├── routes/                 #   landing, pad, pad session, policy pages, report form
-│   ├── components/             #   presence, share dialog, history, status line, pad menu, UI primitives
-│   ├── hooks/                  #   theme, awareness, pad stats, status-line preference
-│   └── lib/                    #   slug rules, pad API, report API, identity, moderation profile and labels
-├── worker/                     # Cloudflare Worker (see "Worker modules")
-├── test/                       # Workers-runtime tests (room, ledger, reports)
-├── e2e/                        # Playwright browser tests
-├── scripts/
-│   ├── admin.mjs               #   moderation CLI
-│   ├── api-smoke.mjs           #   end-to-end smoke suite
-│   └── ws-smoke.mjs            #   WebSocket smoke check
-├── public/                     # robots.txt, sitemap.xml, llms.txt, headers
-├── docs/                       # this documentation, ADRs, agent conventions
-├── CONTEXT.md                  # domain vocabulary
-└── wrangler.jsonc              # Cloudflare config
-```
+`npm test` runs `test/slug.test.ts` (unit) and `test/worker.test.ts` (in `workerd`, against the real Durable Object): valid slugs stay connected, invalid and reserved slugs close with `4400`, `?op=status` answers, and `admin-*` ops return 404 on the public route. There is no browser test suite yet.

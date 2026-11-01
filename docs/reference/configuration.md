@@ -1,114 +1,64 @@
-# Configuration & limits
+# Configuration and limits
 
-Every setting an instance has, where it lives, and the built-in limits.
+Exact values. For the reasons, see [ADR-0003](../adr/0003-pad-lifecycle-and-limits.md) and [ADR-0004](../adr/0004-cloudflare-native-delivery-and-tests.md).
 
-- [Secrets and variables](#secrets-and-variables)
-- [Cloudflare bindings](#cloudflare-bindings)
-- [Moderation profile](#moderation-profile)
-- [Built-in limits](#built-in-limits)
-- [Edge rules (dashboard)](#edge-rules-dashboard)
-- [Browser storage](#browser-storage)
+## Limits
 
-## Secrets and variables
+All defined in `shared/limits.ts`.
 
-Set in production with `npx wrangler secret put <NAME>`; locally in `.dev.vars`
-(gitignored).
+| Limit | Value | Behavior past it |
+| --- | --- | --- |
+| Document state per pad (`MAX_DOC_BYTES`) | 1 MiB | Room stops saving and broadcasts `pad-full`. |
+| Hard ceiling | 2 MiB | Room refuses edits (read-only). |
+| WebSocket message (`MAX_MESSAGE_BYTES`) | 256 KiB | Connection closes with `1009`. |
+| Live connections per pad (`MAX_CONNECTIONS`) | 50 | Extra connections close with `1013`. |
+| Slug length | 1 to 64 | The address is invalid (`4400`). |
 
-| Name | Required for | If unset | Local value |
-| --- | --- | --- | --- |
-| `ADMIN_SECRET` | The moderation API and CLI | The admin surface answers `404 unknown-op` to everyone. | Any long random value. The CLI and smoke suite read it from `.dev.vars`. |
-| `TURNSTILE_SECRET` | Accepting public reports | `POST /api/reports` answers `503`. | `1x0000000000000000000000000000000AA` (Turnstile's always-pass test secret) |
-| `TURNSTILE_SITE_KEY` | Showing the report form | The form says reporting is unavailable. Public — served by `GET /api/reports/config`. | `1x00000000000000000000AA` |
-
-Never deploy Turnstile's test keys; the smoke suite fails a remote host that does.
-
-Rotating `ADMIN_SECRET` takes effect on the next request. Rotating Turnstile keys
-needs both keys from the same widget.
-
-The test suite sets its own values in `vitest.config.ts` and answers Turnstile's
-verification locally.
+Slug rules and the reserved list are in `shared/slug.ts`.
 
 ## Cloudflare bindings
 
-Declared in `wrangler.jsonc`.
+Defined in `wrangler.jsonc`.
 
-| Binding | Kind | Purpose |
+| Binding | Type | Notes |
 | --- | --- | --- |
-| `PadRoom` | Durable Object (SQLite), migration `v1` | One room per pad: live connections, document, snapshots, PIN, links, block, freeze. |
-| `ModerationLedger` | Durable Object (SQLite), migration `v2` | One instance named `ledger`: reports, cases, evidence, action log. |
-| `ASSETS` | Static assets | The built app. |
+| `PadRoom` | Durable Object (SQLite-backed) | One instance per slug. |
+| `ASSETS` | Static assets | `not_found_handling: "none"`; `run_worker_first: ["/*", "!/assets/*"]`. |
+| `DB` | D1 database `padline` | Pad index, reports and the action log ([ADR-0002](../adr/0002-lean-moderation.md)). Schema in `migrations/`. |
 
-`routes` lists the custom domains; `assets.run_worker_first` sends everything
-except `/assets/*` through the Worker (see ADR-0011 before changing it). The dev
-server is pinned to `127.0.0.1:8788` in `vite.config.ts`.
-
-## Moderation profile
-
-`src/lib/moderation-profile.ts` — every moderation value that encodes one
-jurisdiction's rules rather than Padline's mechanism
-([ADR-0018](../adr/0018-notice-and-action-moderation.md)). The repository ships
-`padline.page`'s Brazilian assessment; a fork replaces it
-([why](../operating-a-public-instance.md)).
-
-| Field | `padline.page` value | Used for |
+| Variable | Default | Notes |
 | --- | --- | --- |
-| `jurisdiction` | `BR` | Labelling the profile. |
-| `label` | Brazil — padline.page operator (individual, non-commercial) | Labelling the profile. |
-| `assessedAt` | `2026-09-13` | When the values were assessed. |
-| `operatorContact` | `contact@padline.page` | Policy pages and the report form's fallback. |
-| `categories` | 12 ids, 5 grave — [list](cli.md#categories) | Report categories and case priority. |
-| `reviewTargetHours` | grave `24`, standard `72` | `stats` timing targets. |
-| `evidenceRetentionDays` | `180` | Days evidence is kept after its case closes. |
-| `reporterContactRetentionDays` | `180` | Days a reporter's email is kept after the case closes. |
+| `ACCESS_TEAM_DOMAIN` | empty | Your Access team domain, for example `team.cloudflareaccess.com`. Not a secret. |
+| `ACCESS_AUD` | empty | The Access application's AUD tag. Not a secret. |
+| `ADMIN_DEV_BYPASS` | unset | Set to `1` in `.dev.vars` to open the admin page on `localhost` and `127.0.0.1` only. Ignored on any other host. |
 
-Rules for changing it:
+With `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` empty, the admin surface answers `403` to everyone. There are no secrets.
 
-- **Category ids are stored in the ledger** — add categories or change `grave`
-  freely, but don't rename an id your instance has already used.
-- **Every category needs a visitor-facing name** in `src/lib/moderation-labels.ts`
-  (TypeScript enforces it).
-- Policy wording and authority referral channels are not in the profile — they're
-  prose in `src/routes/legal.tsx` and your runbook.
+Database scripts: `npm run db:migrate:local` applies `migrations/` to the local dev database. Remote: `npx wrangler d1 migrations apply padline --remote`.
 
-## Built-in limits
+## Migrations
 
-Constants in the code. Changing one is a product decision — see the ADR.
+| Tag | Adds |
+| --- | --- |
+| `v1` | `PadRoom` (SQLite-backed) |
+| `v2` | `ModerationLedger` (inert placeholder, see `worker/moderation-ledger.ts`) |
 
-| Limit | Value | Where | ADR |
-| --- | --- | --- | --- |
-| Pad address length | 1–64 characters, `a-z 0-9 -` | `src/lib/slug.ts` | 0004 |
-| Reserved addresses | `api assets parties p r admin terms privacy content-policy legal about report` | `src/lib/slug.ts` | 0004 |
-| Document size | 2 MB (then edits are refused until a restore or purge) | `worker/room-persistence.ts` | 0008 |
-| Save debounce | 2 s, at most 10 s | `worker/index.ts` | 0003 |
-| Snapshot frequency / retention | at most 1 per 60 s / newest 100 | `worker/room-persistence.ts` | 0006 |
-| Connections per pad | 50 | `worker/index.ts` | 0008 |
-| Connections per IP per pad | 8 | `worker/index.ts` | 0008 |
-| WebSocket message size | 256 KB | `worker/index.ts` | 0008 |
-| PIN length | 4–64 characters | `worker/room-security.ts` | 0009 |
-| PIN backoff | 5 free attempts, then 1 s doubling to 60 s | `worker/room-security.ts` | 0009 |
-| PIN session lifetime / count | 30 days / 200 per pad | `worker/room-security.ts` | 0009 |
-| Operator review preview | 64 KB of text | `worker/room-capabilities.ts` | 0010 |
-| Operator reason / legal basis | 500 characters | `worker/moderation-ledger.ts` | 0018 |
-| Report description / contact | 2,000 / 254 characters | `worker/moderation-ledger.ts` | 0018 |
-| Turnstile token | 2,048 characters | `worker/turnstile.ts` | 0018 |
-| Evidence chunk size | 1 MB (SQLite's BLOB limit is 2 MB) | `worker/moderation-ledger.ts` | 0018 |
-| Retention sweep | daily | `worker/moderation-ledger.ts` | 0018 |
+Applied migrations are append-only. Removing the placeholder requires a `deleted_classes` migration and erases what that namespace stores.
 
-## Edge rules (dashboard)
+## Routes
 
-Not in the repository; configure per instance in Cloudflare (Security → WAF →
-Rate limiting rules). Recommended: per-IP limits on `/api/reports`, on PIN
-verification (`/parties/*` with `op=verify-pin`), and on new pad paths. See
-[Self-hosting](../self-hosting.md#protect-it-at-the-edge).
+`padline.page`, `www.padline.page` and `padline.dcesares.dev`, as custom domains. `www` and the alternate domain redirect (301) to `padline.page`. Replace these in a fork.
 
-## Browser storage
+## Headers
 
-What the app keeps on the visitor's device:
+- Security headers on Worker responses: `x-content-type-options: nosniff`, `referrer-policy: no-referrer`.
+- In production only: `strict-transport-security: max-age=31536000; includeSubDomains` and a Content Security Policy (`script-src 'self'`; styles and fonts from `self` and Google Fonts; `connect-src 'self'` plus `wss://<host>`; `frame-ancestors 'none'`).
+- `/assets/*` bypasses the Worker, so `public/_headers` sets its cache and security headers.
 
-| Key | Storage | Holds |
-| --- | --- | --- |
-| `padline:identity` | localStorage | Display name and color |
-| `padline:theme` | localStorage | `light` / `dark` |
-| `padline:statusline` | localStorage | `on` / `off` |
-| `padline:token:<slug>` | localStorage | PIN session token for that pad |
-| `padline:<slug>` | IndexedDB | Offline copy of that pad |
+## Public files
+
+`public/robots.txt`, `public/sitemap.xml`, `public/llms.txt`, `public/humans.txt`, `public/favicon.svg`.
+
+## Free tier
+
+Cloudflare's free-tier figures for Workers requests and Durable Objects change over time and have not been verified for this project. Check the official pages before launch.

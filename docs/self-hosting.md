@@ -1,30 +1,14 @@
 # Self-hosting
 
-Run Padline locally, deploy your own instance on Cloudflare, and keep it
-healthy. Padline is one Cloudflare Worker and runs on the free tier.
+Run Padline locally, deploy your own instance on Cloudflare, and keep it healthy. Padline is one Cloudflare Worker and runs on the free tier.
 
-> **Before you open an instance to the public**, read
-> [Operating a public instance](operating-a-public-instance.md). Whoever deploys
-> it is responsible for what it hosts, and this repository's policies and
-> moderation values were written for one operator under Brazilian law.
-
-- [What you need](#what-you-need)
-- [Run it locally](#run-it-locally)
-- [Deploy](#deploy)
-- [Make it yours](#make-it-yours)
-- [Turn on moderation and reporting](#turn-on-moderation-and-reporting)
-- [Protect it at the edge](#protect-it-at-the-edge)
-- [Verify a deployment](#verify-a-deployment)
-- [Upgrade](#upgrade)
-- [Troubleshooting](#troubleshooting)
+Whoever deploys an instance is responsible for what it hosts. Pads are public and anyone can write to them, so decide how you will handle abuse before you open it to the public ([ADR-0002](adr/0002-lean-moderation.md)).
 
 ## What you need
 
-- **Node.js 24 LTS** and npm (the repository's `.nvmrc` selects Node 24).
-- **A Cloudflare account** (free) — only when you deploy. Local development needs
-  no account.
-- **A domain on Cloudflare** if you want a custom address; otherwise you get a
-  `*.workers.dev` URL.
+- **Node.js 24 LTS** and npm (`.nvmrc` selects Node 24).
+- **A Cloudflare account** (free), only when you deploy.
+- **A domain on Cloudflare** for a custom address; otherwise you get a `*.workers.dev` URL.
 
 ## Run it locally
 
@@ -32,160 +16,95 @@ healthy. Padline is one Cloudflare Worker and runs on the free tier.
 git clone https://github.com/idcesares/padline.git
 cd padline
 npm install
-npx playwright install chromium   # only for the browser tests
-```
-
-Create `.dev.vars` in the project root (it's gitignored) with local secrets:
-
-```ini
-ADMIN_SECRET=any-long-random-value-for-local-use
-# Turnstile's public test keys: the report form works and always passes.
-TURNSTILE_SECRET=1x0000000000000000000000000000000AA
-TURNSTILE_SITE_KEY=1x00000000000000000000AA
-```
-
-Start it:
-
-```sh
 npm run dev        # http://127.0.0.1:8788
 ```
 
-Open `http://127.0.0.1:8788/my-first-pad` in two tabs and type in one. The
-Worker, the Durable Objects, and their SQLite storage all run locally through
-Wrangler.
+Open `http://127.0.0.1:8788/my-first-pad` in two tabs and type in one. The Worker, the Durable Objects and their SQLite storage all run locally through Wrangler. No secrets are needed.
 
-To check everything works end to end, keep the dev server running and in
-another terminal run the smoke suite:
+To try the admin page locally, create the local database and open the bypass (localhost only):
 
 ```sh
-node scripts/api-smoke.mjs         # every check must pass
+npm run db:migrate:local
+echo ADMIN_DEV_BYPASS=1 >> .dev.vars
 ```
 
-For the full verification a change needs before merging, see
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+Then open `http://127.0.0.1:8788/admin`.
+
+Before you call a change done:
+
+```sh
+npm test
+npm run build
+```
+
+### Windows notes
+
+- Windows reserves TCP ports 5142 to 5241. The dev server is pinned to `127.0.0.1:8788` in `vite.config.ts` for this reason; do not change it back to a default.
+- `npm install` needs `--legacy-peer-deps` (already set in `.npmrc`) because `y-partyserver` peers `workers-types` v4 against Wrangler's v5.
+- `vite build` and `vitest` can leave orphaned `workerd.exe` processes that lock `dist\padline\.wrangler` and break the next build with `EPERM`. Stop any `workerd` processes and remove `dist` before rebuilding.
+- A stopped dev server can keep holding port 8788; Vite then moves to 8789 and the stale port returns fake 500s. Check the port before trusting a result.
 
 ## Deploy
 
 ```sh
 npx wrangler login     # once
-npm run deploy         # build, then deploy the Worker, assets, and Durable Objects
+npm run deploy         # build, then deploy the Worker, assets and Durable Objects
 ```
 
-`npm run deploy` applies Durable Object migrations automatically — the pad
-rooms (`v1`) and the moderation ledger (`v2`). Your instance is live at
-`https://padline.<your-subdomain>.workers.dev`.
+`npm run deploy` applies the Durable Object migrations automatically. Your instance is live at `https://padline.<your-subdomain>.workers.dev`.
 
-**Before your first deploy from a fork**, edit the `routes` block in
-[`wrangler.jsonc`](../wrangler.jsonc): it lists `padline.page` and its old
-domains. Replace them with your own domain, or remove the block to use
-`workers.dev`. Leave the rest of `wrangler.jsonc` alone — its asset routing is
-deliberate (see the comments in the file and ADR-0011).
+Before your first deploy from a fork, edit the `routes` block in [`wrangler.jsonc`](../wrangler.jsonc): it lists `padline.page` and its aliases. Replace them with your own domain, or remove the block to use `workers.dev`. Leave the asset settings alone; they are deliberate ([ADR-0004](adr/0004-cloudflare-native-delivery-and-tests.md)).
+
+## Moderation setup
+
+The admin page and report inbox need a D1 database and Cloudflare Access ([ADR-0002](adr/0002-lean-moderation.md)). Do this before you open the instance to the public:
+
+1. Create the database and apply the schema:
+   ```sh
+   npx wrangler d1 create padline
+   npx wrangler d1 migrations apply padline --remote
+   ```
+   Paste the returned `database_id` into the `d1_databases` entry in `wrangler.jsonc`.
+2. In Cloudflare Zero Trust, create a self-hosted Access application covering `/admin` and `/api/admin/*` on your domain, with a policy that allows only you.
+3. Put the team domain and the application's AUD tag in `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` in `wrangler.jsonc`, then deploy. Until both are set, the admin page answers `403`.
+4. Check that `workers_dev` is off or also covered by Access, so there is no unprotected `*.workers.dev` path to `/admin`.
+5. Add a rate limiting rule on `/api/report` at the edge (see below).
 
 ## Make it yours
 
-A fork that deploys unchanged still says it's `padline.page`. Change:
+A fork that deploys unchanged still says it is `padline.page`. Change:
 
 | What | Where |
 | --- | --- |
 | Custom domains | `routes` in `wrangler.jsonc` |
-| Canonical host and redirects | `CANONICAL_HOST` and `LEGACY_HOSTS` in `worker/index.ts` |
-| Terms, Privacy Policy, Content Policy | `src/routes/legal.tsx` — rewrite for your instance and jurisdiction |
-| Operator contact, report categories, review targets, retention | `src/lib/moderation-profile.ts` — see [Configuration](reference/configuration.md#moderation-profile) |
-| Category names shown to visitors | `src/lib/moderation-labels.ts` |
+| Canonical host and redirects | `CANONICAL_HOST` and `ALIAS_HOSTS` in `worker/index.ts` |
+| Reserved words | the reserved list in `shared/slug.ts` |
+| Limits | `shared/limits.ts` |
 | Crawler and AI-assistant policy, sitemap | `public/robots.txt`, `public/sitemap.xml`, `public/llms.txt` |
-| Source link and author in footers | `src/routes/legal.tsx`, `src/routes/landing.tsx` |
-
-## Turn on moderation and reporting
-
-Three secrets switch on the operator tools and the public report form. Until
-they're set, the moderation API answers like it doesn't exist, and reports are
-refused with `503`.
-
-1. **Create a Turnstile widget** in the Cloudflare dashboard (Turnstile → Add
-   widget) for your domain. Keep its **site key** and **secret key**.
-2. **Set the secrets:**
-
-   ```sh
-   npx wrangler secret put ADMIN_SECRET        # a long random value; keep it in a password manager
-   npx wrangler secret put TURNSTILE_SECRET    # the widget's secret key
-   npx wrangler secret put TURNSTILE_SITE_KEY  # the widget's site key (public)
-   ```
-
-3. **Deploy** (`npm run deploy`) if you haven't since setting them.
-4. **Put the same `ADMIN_SECRET` in your local `.dev.vars`** (or export it) so the
-   moderation CLI can reach the deployed instance.
-
-Never deploy Turnstile's test keys (`1x0000…`). The smoke suite fails a remote
-host that uses them.
-
-Then read the [moderation guide](moderation-guide.md).
+| Names, links and contact | `index.html`, `public/humans.txt`, `package.json`, `SECURITY.md` |
 
 ## Protect it at the edge
 
-Padline enforces its own limits inside each pad, but a few Cloudflare
-rate-limiting rules (Security → WAF → Rate limiting rules) are a cheap outer
-layer:
-
-| Rule | Why |
-| --- | --- |
-| Per-IP limit on requests to `/api/reports` | Slows report floods; Turnstile already runs before anything is stored. |
-| Per-IP limit on `/parties/*` requests containing `op=verify-pin` | Outer layer against PIN guessing; each pad already backs off on its own. |
-| Per-IP limit on new pad paths | Slows mass pad creation. |
+Rate limiting is a Cloudflare rule, not application code ([ADR-0003](adr/0003-pad-lifecycle-and-limits.md)). In the Cloudflare dashboard, add a rate limiting rule on your zone for the WebSocket path (`/parties/*`), for `/api/report` and for page loads, sized for your traffic. The room already caps document size, connections per pad and message size.
 
 ## Verify a deployment
 
-Run the smoke suite against your host. It reads `ADMIN_SECRET` from the
-environment or `.dev.vars`:
-
 ```sh
-node scripts/api-smoke.mjs https://your-domain
+curl -s https://your-domain/api/health
+# {"ok":true}
 ```
 
-It checks pads, PINs, read-only links, security headers, the report channel, and
-a full takedown lifecycle through the moderation ledger. Every check must pass.
-
-What a production run leaves behind: one **closed** moderation case (category
-`other`, "api-smoke takedown lifecycle"), a small sealed evidence record, and a
-handful of action-log entries. They're labelled so you can recognize them in
-[totals and exports](moderation-guide.md#see-the-whole-picture).
-
-`--no-admin` skips the takedown lifecycle on purpose; treat that run as partial.
+Then open `https://your-domain/test-pad` in two browsers, type in one, and confirm the other updates and the status pill reads "saved".
 
 ## Upgrade
 
-```sh
-git pull
-npm install
-npm test && npm run build
-npm run deploy
-node scripts/api-smoke.mjs https://your-domain
-```
-
-Read new ADRs in `docs/adr/` and the PR descriptions before upgrading — some
-changes need a new secret or a dashboard rule.
+Pull, then `npm install`, `npm test`, `npm run build`, `npm run deploy`. Read any new ADRs first; Durable Object migrations in `wrangler.jsonc` are append-only, so never edit or reorder an applied entry.
 
 ## Troubleshooting
 
-**The dev server isn't on port 8788, or 8788 returns strange 500s.** A previous
-dev server is still holding the port. Stop leftover `node`/`workerd` processes and
-start again. The port is pinned to `127.0.0.1:8788` because Windows reserves
-ports 5142–5241 — don't change it back.
-
-**`npm install` fails on peer dependencies.** `.npmrc` sets `legacy-peer-deps`;
-make sure you're installing from the project root. `y-partyserver` still declares
-Workers types v4 while Wrangler requires v5; this workaround remains necessary.
-
-**`npm run build` fails with `EPERM` on `dist\padline\.wrangler` (Windows).** A
-`workerd` process from an earlier test run is locking it. Stop `workerd`
-processes, delete `dist`, and build again.
-
-**The browser tests fail immediately.** `npm run test:e2e` starts its own server
-on 8788 — stop `npm run dev` first. The first run on a cold cache can miss the
-pad-open time budget; run it again before treating it as a regression.
-
-**The report form says reporting isn't available.** `TURNSTILE_SITE_KEY` isn't set
-on that instance (locally: `.dev.vars`).
-
-**The moderation CLI says "Rejected as unknown-op".** The `ADMIN_SECRET` you're
-using doesn't match the deployed one, the secret isn't deployed, or the instance
-predates the moderation ledger.
+| Symptom | Likely cause |
+| --- | --- |
+| Pads never connect | A Cloudflare rule or proxy is blocking WebSockets on `/parties/*`. |
+| `EPERM` on build | Orphaned `workerd` process; see [Windows notes](#windows-notes). |
+| A stale page after deploy | Hard-reload; hashed assets change names on every build. |
+| "This pad is busy" for everyone | The pad has more than about 50 connections; wait or use another address. |
