@@ -432,6 +432,7 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
     renderAvatars();
     syncMenuState();
     renderPreviewButton();
+    app.querySelector("#qrTile svg")?.setAttribute("aria-label", `${t("sh.qr")} ${url}`);
     view.dispatch({ effects: placeholderSlot.reconfigure(placeholder(t("e.ph"))) });
     view.contentDOM.setAttribute("aria-label", t("e.pad"));
   }

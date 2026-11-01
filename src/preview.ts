@@ -239,11 +239,15 @@ function table(parent: HTMLElement, node: Node, src: string): void {
   wrap.className = "tbl";
   const t = el("table", wrap);
   const rows = children(node).filter((c) => c.name === "TableHeader" || c.name === "TableRow");
+  const columns = rows.length ? cells(rows[0], src).length : 0;
   rows.forEach((row) => {
     const isHead = row.name === "TableHeader";
     const tr = el("tr", isHead ? el("thead", t) : (t.tBodies[0] ?? el("tbody", t)));
-    for (const cell of cells(row, src)) {
+    // Every row gets the header's columns: a short row is padded, a long one cut.
+    const own = cells(row, src);
+    for (let i = 0; i < columns; i++) {
       const td = el(isHead ? "th" : "td", tr);
+      const cell = own[i];
       if (cell) inline(td, cell, src);
       trimEdges(td);
     }

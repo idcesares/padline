@@ -16,8 +16,6 @@ Check against [the mockup](design/mockup.html) by eye.
 ## Known gaps
 
 - `src/preview.ts` and `src/qr.ts` have no automated tests (the suite runs in workerd, without a DOM).
-- Changing the language with the share dialog open leaves the QR's accessible name in the old language until the next open.
-- A table row that stops early (`1 |`) renders fewer cells than the header.
 - The preview shows single line breaks as breaks, unlike strict Markdown. Deliberate.
 - On mobile the preview is one toggle button, not the mockup's segmented control.
 - The request body is not drained on a 403 and on non-JSON input to the admin and report endpoints.
@@ -28,7 +26,6 @@ Check against [the mockup](design/mockup.html) by eye.
 
 Each needs an explicit go-ahead from the operator.
 
-- Create the remote D1 database and apply the migrations.
-- Create the Cloudflare Access application covering `/admin` and `/api/admin/*`; set `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`.
-- Remove the secrets left from the previous version (`ADMIN_SECRET`, `TURNSTILE_SECRET`, `TURNSTILE_SITE_KEY`).
-- Add an edge rate-limit rule on `/api/report`.
+- [done 2026-11-01] Cloudflare Access app `padline-admin` covers `/admin` and `/api/admin/*`; `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` set in `wrangler.jsonc` and deployed 2026-11-01. Policy allows `dcesares.dev@gmail.com` and `dcesares.zarac@gmail.com`.
+- [done 2026-11-01] Old Worker secrets removed (`ADMIN_SECRET`, `TURNSTILE_*`); `wrangler secret list` is empty.
+- [done 2026-11-01] Edge rate-limit on /api/report (2 req / 10s per IP, Block 10s; free-plan max window). Replaced Leaked credential check to free the 1/1 slot.

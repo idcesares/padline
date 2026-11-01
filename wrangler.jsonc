@@ -50,21 +50,22 @@
       }
     ]
   },
-  // The pad index, reports and the action log (ADR-0002). No database_id is
-  // committed: create the database, paste its id here and apply the migrations
-  // before the first deploy. See docs/self-hosting.md.
+  // The pad index, reports and the action log (ADR-0002). The id below is the
+  // padline.page database; a self-hosted instance creates its own, replaces the
+  // id and applies the migrations before the first deploy. See docs/self-hosting.md.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "padline",
+      "database_id": "2aaade6c-6a66-4f89-ad39-4837c3c18b5e",
       "migrations_dir": "migrations"
     }
   ],
   // Cloudflare Access settings for /admin and /api/admin/* (ADR-0002). Both
   // empty means the admin surface answers 403 to everyone. Neither is a secret.
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": ""
+    "ACCESS_TEAM_DOMAIN": "idcesares.cloudflareaccess.com",
+    "ACCESS_AUD": "4e315e1bafe3dddffed8f37d28c657b7766d4b74942c2c2973fe1479c23c1b7a"
   },
   "migrations": [
     {
