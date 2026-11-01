@@ -136,6 +136,8 @@ const en: Table = {
   "a.act.dismiss": "dismiss reports",
   "a.err": "That did not go through. Reload to see what is in effect.",
   "a.denied": "Access denied.",
+  "a.gone": "That pad is not in the index.",
+  "a.already": "That pad is already blocked.",
 };
 
 const pt: Table = {
@@ -271,6 +273,8 @@ const pt: Table = {
   "a.act.dismiss": "descartar denúncias",
   "a.err": "Não deu certo. Recarregue para ver o que está valendo.",
   "a.denied": "Acesso negado.",
+  "a.gone": "Esse pad não está no índice.",
+  "a.already": "Esse pad já está bloqueado.",
 };
 
 const tables: Record<Lang, Table> = { en, pt };

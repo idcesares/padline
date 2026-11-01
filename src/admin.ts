@@ -72,7 +72,17 @@ export function mountAdmin(app: HTMLElement, open: (slug: string) => void): () =
       ...init,
       headers: init?.method === "POST" ? { "content-type": "application/json" } : undefined,
     });
-    if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? t("a.denied") : t("a.err"));
+    if (!res.ok) {
+      const key =
+        res.status === 401 || res.status === 403
+          ? "a.denied"
+          : res.status === 404
+            ? "a.gone"
+            : res.status === 409
+              ? "a.already"
+              : "a.err";
+      throw new Error(t(key));
+    }
     return (await res.json()) as T;
   }
   const fail = (e: unknown) => {

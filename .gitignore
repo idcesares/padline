@@ -15,3 +15,6 @@ tsconfig.tsbuildinfo
 .agents/
 skills-lock.json
 .serena/
+
+# Operator notes: account details, local only.
+docs/operator-status.md

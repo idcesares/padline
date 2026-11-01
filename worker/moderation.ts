@@ -40,6 +40,30 @@ async function readJson(request: Request): Promise<Record<string, unknown> | nul
   }
 }
 
+/**
+ * Consumes a body the handler did not read, so an unread one cannot break the
+ * next request on a kept-alive connection. Bounded: past the limit the rest is
+ * cancelled, not buffered, because the caller may be unauthenticated.
+ */
+async function discardBody(request: Request): Promise<void> {
+  if (request.bodyUsed || !request.body) return;
+  const reader = request.body.getReader();
+  try {
+    let seen = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      seen += value.byteLength;
+      if (seen > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return;
+      }
+    }
+  } catch {
+    // The client went away; nothing left to drain.
+  }
+}
+
 const cleanText = (value: unknown, max: number): string | null => {
   if (typeof value !== "string") return null;
   const text = value.replace(/\s+/g, " ").trim().slice(0, max);
@@ -53,6 +77,12 @@ const cleanText = (value: unknown, max: number): string | null => {
  * differently, and it does so before any slug is considered.
  */
 export async function handleReport(request: Request, env: Env): Promise<Response> {
+  const response = await reportResponse(request, env);
+  await discardBody(request);
+  return response;
+}
+
+async function reportResponse(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method-not-allowed" }, 405);
   const body = await readJson(request);
   const slug = typeof body?.slug === "string" ? normalizeSlug(body.slug) : "";
@@ -135,6 +165,12 @@ async function roomOf(env: Env, slug: string) {
  * first: the D1 rows below are the record of what the room already did.
  */
 export async function handleAdmin(request: Request, env: Env): Promise<Response> {
+  const response = await adminResponse(request, env);
+  await discardBody(request);
+  return response;
+}
+
+async function adminResponse(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const auth = await authorizeAdmin(request, env);
   if (!auth.ok) return json({ error: auth.status === 401 ? "unauthorized" : "forbidden" }, auth.status);
@@ -196,7 +232,6 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       }
 
       if (request.method === "POST" && verb === "clear") {
-        await request.arrayBuffer(); // drain: an unread body breaks the next request on a kept-alive connection
         // Only pads the index knows: clearing an unknown slug would create and log a pad that never existed.
         const known = await env.DB.prepare("SELECT 1 AS ok FROM pads WHERE slug = ?").bind(slug).first();
         if (!known) return json({ error: "not-found" }, 404);
@@ -235,7 +270,6 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       }
 
       if (request.method === "POST" && verb === "dismiss") {
-        await request.arrayBuffer();
         await env.DB.batch([
           resolveReports(env, slug, now),
           logAction(env, now, "dismiss", slug, null),

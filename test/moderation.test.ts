@@ -108,6 +108,45 @@ describe("public report", () => {
     expect(row).toBeNull();
   });
 
+  // The two size checks in readJson each get a body only that check can refuse.
+  const post = (body: BodyInit, init: RequestInit = {}) =>
+    SELF.fetch(`${ORIGIN}/api/report`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      ...init,
+    });
+
+  it("refuses a declared oversize body before reading it", async () => {
+    // 3000 characters, about 6000 bytes: past the limit by content-length only.
+    const slug = uniqueSlug();
+    const response = await post(JSON.stringify({ slug, category: "other", note: "é".repeat(3000) }));
+    expect(response.status).toBe(400);
+    expect(await env.DB.prepare("SELECT id FROM reports WHERE slug = ?").bind(slug).first()).toBeNull();
+  });
+
+  it("refuses an oversize body that declares no length", async () => {
+    // A stream is sent chunked, so there is no content-length to refuse early.
+    const slug = uniqueSlug();
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({ slug, category: "other", note: "a".repeat(5000) }),
+    );
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const response = await post(stream, { duplex: "half" } as RequestInit);
+    expect(response.status).toBe(400);
+    expect(await env.DB.prepare("SELECT id FROM reports WHERE slug = ?").bind(slug).first()).toBeNull();
+  });
+
+  it("answers a non-JSON body without reading it into a report", async () => {
+    const response = await post("not json at all", { headers: { "content-type": "text/plain" } });
+    expect(response.status).toBe(400);
+  });
+
   it("caps the note", async () => {
     const slug = uniqueSlug();
     await report({ slug, category: "other", note: "a".repeat(1000) });
