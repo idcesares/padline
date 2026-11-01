@@ -3,42 +3,43 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
-    <meta name="description" content="Padline — URL-first, real-time collaborative pads. No accounts, no friction. Open a URL, start typing, share the link." />
+    <title>Padline</title>
+    <meta name="description" content="A public notepad. Open an address, start typing, and everyone on that address sees it live. No account, no setup." />
     <meta name="author" content="Isaac D'Césares" />
     <link rel="canonical" href="https://padline.page/" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FCFCFD" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12151C" />
     <meta property="og:site_name" content="Padline" />
-    <meta property="og:title" content="Padline — real-time collaborative pads" />
-    <meta property="og:description" content="URL-first, no-account collaborative pads. Open a URL, start typing, share the link." />
+    <meta property="og:title" content="Padline" />
+    <meta property="og:description" content="A public notepad. Open an address, start typing, and everyone on that address sees it live." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://padline.page/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Padline — real-time collaborative pads" />
-    <meta name="twitter:description" content="URL-first, no-account collaborative pads. Open a URL, start typing, share the link." />
-    <title>Padline</title>
-    <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "WebApplication",
-        "name": "Padline",
-        "url": "https://padline.page/",
-        "description": "URL-first, no-account, real-time collaborative pads.",
-        "applicationCategory": "Productivity",
-        "operatingSystem": "Any",
-        "offers": { "@type": "Offer", "price": "0" },
-        "license": "https://github.com/idcesares/padline/blob/main/LICENSE",
-        "author": {
-          "@type": "Person",
-          "name": "Isaac D'Césares",
-          "url": "https://github.com/idcesares"
-        }
-      }
-    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&display=swap"
+    />
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M6 12v6.5A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V12"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M3 7h3c4 0 6 10 11 10h4"/><path d="m18 14 3 3-3 3"/><path d="M3 17h3c1.6 0 2.8-.9 3.8-2.2"/><path d="M14 9.2C15 7.9 16.2 7 18 7h3"/><path d="m18 4 3 3-3 3"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+      <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11"/><path d="m8 11 4 4 4-4"/><path d="M5 19h14"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m14.5 7.5 3 3"/></symbol>
+      <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 2.8 19.5h18.4L12 3.5Z"/><path d="M12 10v4.5"/><path d="M12 17.3v.1"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.8v.1"/></symbol>
+    </svg>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

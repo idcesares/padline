@@ -1,175 +1,26 @@
-import { Hono } from "hono";
-import {
-  routePartykitRequest,
-  type Connection,
-  type ConnectionContext,
-} from "partyserver";
-import { YServer } from "y-partyserver";
-import { isValidSlug } from "../src/lib/slug";
-import {
-  CLOSE_PAD_REMOVED,
-  RoomCapabilities,
-  type BlockRecord,
-} from "./room-capabilities";
-import { LEDGER_NAME, type ModerationLedger } from "./moderation-ledger";
-import { RoomPersistence } from "./room-persistence";
-import { RoomSecurity } from "./room-security";
-import { verifyTurnstile } from "./turnstile";
+import { routePartykitRequest } from "partyserver";
+import { isValidSlug } from "../shared/slug";
+import { authorizeAdmin } from "./access";
+import { handleAdmin, handleReport } from "./moderation";
+import type { Env } from "./pad-room";
 
+export { PadRoom } from "./pad-room";
+// Kept only so migration v2 stays valid; see the file.
 export { ModerationLedger } from "./moderation-ledger";
 
-type Env = {
-  PadRoom: DurableObjectNamespace<PadRoom>;
-  ModerationLedger: DurableObjectNamespace<ModerationLedger>;
-  ASSETS: Fetcher;
-  /** Bearer secret for op=admin-*; unset disables the admin surface entirely. */
-  ADMIN_SECRET?: string;
-  /** Turnstile secret for public reports; unset refuses every report (503). */
-  TURNSTILE_SECRET?: string;
-  /** Turnstile site key (public), served to the report form at runtime. */
-  TURNSTILE_SITE_KEY?: string;
-};
-
-// ADR-0008: cheap-to-enforce, catastrophic-to-miss invariants. The document
-// size cap lives with the persisted state it protects, in RoomPersistence.
-const MAX_MESSAGE_BYTES = 256 * 1024;
-const MAX_CONNECTIONS = 50;
-const MAX_CONNECTIONS_PER_IP = 8;
-
-type ConnState = { readonly: boolean; ip: string } | null;
-
-/**
- * One pad ↔ one room (ADR-0003). Holds live connections and admits them
- * (ADR-0005/0008), asking RoomSecurity whether a presented credential is
- * good; durability and snapshot history belong to RoomPersistence, and the
- * HTTP surface to RoomCapabilities.
- */
-export class PadRoom extends YServer<Env> {
-  static callbackOptions = {
-    debounceWait: 2000,
-    debounceMaxWait: 10000,
-  };
-
-  private readonly security = new RoomSecurity(this.ctx.storage, this.env);
-  private readonly persistence = new RoomPersistence({
-    storage: this.ctx.storage,
-    document: this.document,
-    replaceDocument: (data, rootType) =>
-      this.unstable_replaceDocument(data, rootType),
-  });
-  private readonly capabilities = new RoomCapabilities({
-    storage: this.ctx.storage,
-    security: this.security,
-    persistence: this.persistence,
-    roomName: this.name,
-    connections: () => this.getConnections(),
-  });
-
-  async onLoad() {
-    await Promise.all([this.persistence.load(), this.capabilities.load()]);
-  }
-
-  async onSave() {
-    await this.persistence.save();
-  }
-
-  // --- connection gating (ADR-0005: no doc bytes before auth) ---
-
-  async onConnect(conn: Connection, ctx: ConnectionContext) {
-    if (!isValidSlug(this.name)) {
-      conn.close(4400, "invalid-slug");
-      return;
-    }
-    // ADR-0010: takedown outranks every capability, including PIN sessions
-    // and read-only links.
-    if (await this.ctx.storage.get<BlockRecord>("blocked")) {
-      conn.close(CLOSE_PAD_REMOVED, "pad-removed");
-      return;
-    }
-    const connections = [...this.getConnections()];
-    // partyserver has already registered `conn` at this point, so the
-    // connecting socket is included in the count.
-    if (connections.length > MAX_CONNECTIONS) {
-      conn.close(1013, "pad-full");
-      return;
-    }
-    // ADR-0008: per-IP cap (header absent in local dev — skipped there).
-    const ip = ctx.request.headers.get("cf-connecting-ip") ?? "";
-    if (ip) {
-      const sameIp = connections.filter(
-        (c) => c !== conn && (c.state as ConnState)?.ip === ip,
-      ).length;
-      if (sameIp >= MAX_CONNECTIONS_PER_IP) {
-        conn.close(1013, "too-many-connections");
-        return;
-      }
-    }
-    const url = new URL(ctx.request.url);
-    // Which capability is being claimed is admission's decision; whether the
-    // credential is good is RoomSecurity's (ADR-0016). An empty `?ro=` claims
-    // nothing and falls through to the edit gate.
-    const ro = url.searchParams.get("ro");
-    if (ro) {
-      if (!(await this.security.verifyReadOnlyToken(ro))) {
-        conn.close(4403, "invalid-token");
-        return;
-      }
-      conn.setState({ readonly: true, ip });
-    } else {
-      if (!(await this.security.canEdit(url.searchParams.get("token")))) {
-        conn.close(4401, "pin-required");
-        return;
-      }
-      conn.setState({ readonly: false, ip });
-    }
-    super.onConnect(conn, ctx);
-  }
-
-  /**
-   * Unauthorized (state not yet set) fails closed; read-only links can't write;
-   * neither can anyone once the size cap or an operator freeze (ADR-0018) holds.
-   */
-  isReadOnly(conn: Connection): boolean {
-    const state = conn.state as ConnState;
-    if (state?.readonly !== false) return true;
-    return this.persistence.isFrozen() || this.capabilities.isFrozen();
-  }
-
-  onMessage(conn: Connection, message: string | ArrayBuffer | ArrayBufferView) {
-    const size =
-      typeof message === "string"
-        ? new TextEncoder().encode(message).byteLength
-        : message.byteLength;
-    if (size > MAX_MESSAGE_BYTES) {
-      conn.close(1009, "message-too-large");
-      return;
-    }
-    // Drop anything sent before onConnect finished authorizing.
-    if ((conn.state as ConnState) == null) return;
-    super.onMessage(conn, message);
-  }
-
-  async onRequest(request: Request): Promise<Response> {
-    return this.capabilities.handle(request);
-  }
-}
-
-// --- Worker: parties routing, API, OG tags for crawlers, asset serving ---
-
 const CANONICAL_HOST = "padline.page";
-const LEGACY_HOSTS = new Set(["www.padline.page", "padline.dcesares.dev"]);
+const ALIAS_HOSTS = new Set(["www.padline.page", "padline.dcesares.dev"]);
 
 const CRAWLER_RE =
   /facebookexternalhit|twitterbot|slackbot|discordbot|linkedinbot|whatsapp|telegrambot|googlebot|bingbot/i;
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-}
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-function ogResponse(slug: string, origin: string): Response {
-  const title = escapeHtml(`/${slug} — Padline`);
-  const description =
-    "A real-time collaborative pad. Open the link to read or edit together.";
+/** Link previews for a pad address. Never reads the pad (ADR-0001). */
+function previewResponse(slug: string, origin: string): Response {
+  const title = escapeHtml(`/${slug} · Padline`);
+  const description = "A shared pad. Open the link to read and edit together.";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -190,92 +41,36 @@ function ogResponse(slug: string, origin: string): Response {
   });
 }
 
-const app = new Hono<{ Bindings: Env }>();
-
-app.get("/api/health", (c) => c.json({ ok: true }));
-
-// ADR-0018: the operator's surface. The ledger authorizes every request itself,
-// so the Worker forwards without inspecting the secret.
-app.all("/api/admin/*", (c) =>
-  c.env.ModerationLedger.getByName(LEDGER_NAME).fetch(c.req.raw),
-);
-
-// The report form's Turnstile site key. Served at runtime rather than baked
-// into the build, so an instance is configured like its secret: no rebuild.
-app.get("/api/reports/config", (c) =>
-  c.json({ siteKey: c.env.TURNSTILE_SITE_KEY ?? null }),
-);
-
-const stringField = (value: unknown) =>
-  typeof value === "string" ? value : undefined;
-
-// ADR-0018: the public report channel. Turnstile is verified before anything
-// is stored; the ledger then answers every well-formed report the same way,
-// whatever state the pad is in. No IP or client metadata is kept.
-app.post("/api/reports", async (c) => {
-  const body: unknown = await c.req.json().catch(() => null);
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return c.json({ error: "bad-json" }, 400);
-  }
-  const fields = body as Record<string, unknown>;
-  const human = await verifyTurnstile(
-    fields.turnstileToken,
-    c.env.TURNSTILE_SECRET,
-    c.req.header("cf-connecting-ip") ?? null,
-  );
-  if (!human.ok) {
-    return human.reason === "missing-token" || human.reason === "rejected"
-      ? c.json({ error: "verification-failed" }, 403)
-      : c.json({ error: "reporting-unavailable" }, 503);
-  }
-  const outcome = await c.env.ModerationLedger.getByName(LEDGER_NAME).submitReport({
-    pad: stringField(fields.pad),
-    kind: stringField(fields.kind),
-    category: stringField(fields.category),
-    description: stringField(fields.description),
-    contact: stringField(fields.contact),
-  });
-  if (!outcome.ok) return c.json({ error: outcome.error }, 400);
-  return c.json({ ok: true, reference: outcome.reference }, 202);
-});
-
-// ADR-0009: defense-in-depth headers on every HTML/asset response.
 function csp(hostname: string): string {
   return [
     "default-src 'self'",
-    // Turnstile (ADR-0018) is the only third-party origin: its script and its
-    // challenge frame, used by the report form.
-    "script-src 'self' https://challenges.cloudflare.com",
-    "frame-src https://challenges.cloudflare.com",
-    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
+    // Google Fonts serves the stylesheet and the font files (docs/design).
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob:",
-    "font-src 'self' data:",
     // Explicit wss entry: not every browser maps same-origin ws under 'self'.
     `connect-src 'self' wss://${hostname}`,
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",
-    // form-action does NOT fall back to default-src, so without this entry
-    // submission targets stay unrestricted however tight the rest is. Padline
-    // posts everything over fetch/websocket and has no <form> action at all.
+    // form-action does not fall back to default-src. Padline has no <form>
+    // that posts anywhere: everything goes over fetch and WebSocket.
     "form-action 'none'",
   ].join("; ");
 }
 
-// One year. No `preload`: preloading is effectively irreversible once the list
-// ships, whereas a max-age can be wound down. includeSubDomains is safe here
-// because every padline.page host is a Cloudflare HTTPS custom domain — adding
-// an HTTP-only subdomain later would require revisiting this.
+// One year, no `preload`: preloading is effectively irreversible. Safe for
+// includeSubDomains because every padline.page host is an HTTPS custom domain.
 const HSTS = "max-age=31536000; includeSubDomains";
 
 function withSecurityHeaders(response: Response, hostname: string): Response {
   const res = new Response(response.body, response);
   res.headers.set("x-content-type-options", "nosniff");
   res.headers.set("referrer-policy", "no-referrer");
-  // Vite dev injects inline scripts (react-refresh); CSP is prod-only.
-  // HSTS is likewise skipped so a year of forced HTTPS is never pinned
-  // against localhost, where browsers would honor it on any local port.
+  // CSP and HSTS are production-only: Vite dev injects inline scripts, and a
+  // year of forced HTTPS must never pin against localhost.
   const isDev = hostname === "localhost" || hostname === "127.0.0.1";
   if (!isDev) {
     res.headers.set("content-security-policy", csp(hostname));
@@ -285,22 +80,21 @@ function withSecurityHeaders(response: Response, hostname: string): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Canonical host: www and the legacy domain permanently redirect to
-    // padline.page so pad links resolve to a single origin.
-    const requestUrl = new URL(request.url);
-    if (LEGACY_HOSTS.has(requestUrl.hostname)) {
-      requestUrl.hostname = CANONICAL_HOST;
-      return Response.redirect(requestUrl.toString(), 301);
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    // www and the alternate domain redirect so pad links resolve to one origin.
+    if (ALIAS_HOSTS.has(url.hostname)) {
+      url.hostname = CANONICAL_HOST;
+      return Response.redirect(url.toString(), 301);
     }
 
-    // ADR-0018: room admin ops are reachable only from the moderation ledger,
-    // which calls the room's stub directly — so no review or takedown happens
-    // without a record. The public route answers like any unknown op, whoever
-    // asks and whatever secret they present.
+    // ADR-0002: a room's admin operations are never public. They are RPC calls
+    // from handleAdmin; this refusal keeps an `op=admin-*` query from ever
+    // becoming a second way in.
     if (
-      requestUrl.pathname.startsWith("/parties/") &&
-      requestUrl.searchParams.get("op")?.startsWith("admin-")
+      url.pathname.startsWith("/parties/") &&
+      url.searchParams.get("op")?.startsWith("admin-")
     ) {
       return Response.json({ error: "unknown-op" }, { status: 404 });
     }
@@ -308,17 +102,9 @@ export default {
     const roomResponse = await routePartykitRequest(request, env as never);
     if (roomResponse) return roomResponse;
 
-    const url = new URL(request.url);
-    // Hashed assets: serve the real file, answer a miss with a 404 that is
-    // explicitly not cacheable, and never fall back to the SPA shell — HTML
-    // cached as JavaScript under the immutable /assets/* rule in
-    // public/_headers breaks clients after a deployment (ADR-0011).
-    //
-    // Dormant under the current routing: `!/assets/*` in run_worker_first
-    // means these requests are answered by the asset router and never reach
-    // the Worker. It is written to be correct if that exclusion is ever
-    // dropped — hence serving the asset rather than 404ing unconditionally,
-    // which would blank every chunk the moment the Worker saw one.
+    // Dormant while run_worker_first excludes /assets/* (ADR-0004): the asset
+    // router answers those. Written to stay correct if that is ever dropped,
+    // and to never answer a missing chunk with the HTML shell.
     if (url.pathname.startsWith("/assets/")) {
       const asset = await env.ASSETS.fetch(request);
       if (asset.status === 404) {
@@ -335,26 +121,47 @@ export default {
       }
       return withSecurityHeaders(asset, url.hostname);
     }
+
+    if (url.pathname === "/api/health") {
+      return withSecurityHeaders(Response.json({ ok: true }), url.hostname);
+    }
+    if (url.pathname === "/api/report") {
+      return withSecurityHeaders(await handleReport(request, env), url.hostname);
+    }
+    if (url.pathname.startsWith("/api/admin/")) {
+      return withSecurityHeaders(await handleAdmin(request, env), url.hostname);
+    }
     if (url.pathname.startsWith("/api/")) {
-      return app.fetch(request, env, ctx);
+      return withSecurityHeaders(
+        Response.json({ error: "not-found" }, { status: 404 }),
+        url.hostname,
+      );
+    }
+
+    // The admin shell is the same static page as everything else, but only
+    // someone Access has let in gets it. The data behind it checks again.
+    if (url.pathname === "/admin" || url.pathname === "/admin/") {
+      const auth = await authorizeAdmin(request, env);
+      if (!auth.ok) {
+        return withSecurityHeaders(
+          new Response(auth.status === 401 ? "Unauthorized" : "Forbidden", {
+            status: auth.status,
+            headers: { "content-type": "text/plain;charset=utf-8", "cache-control": "no-store" },
+          }),
+          url.hostname,
+        );
+      }
     }
 
     const slug = url.pathname.slice(1);
-    if (
-      isValidSlug(slug) &&
-      CRAWLER_RE.test(request.headers.get("user-agent") ?? "")
-    ) {
-      return withSecurityHeaders(ogResponse(slug, url.origin), url.hostname);
+    if (isValidSlug(slug) && CRAWLER_RE.test(request.headers.get("user-agent") ?? "")) {
+      return withSecurityHeaders(previewResponse(slug, url.origin), url.hostname);
     }
 
-    // not_found_handling is "none", so the asset router no longer invents an
-    // index.html for unmatched paths. Real files (/, /robots.txt, ...) still
-    // serve directly; a pad path is a client-side route and must still boot
-    // the SPA, so the shell is served explicitly here.
+    // not_found_handling is "none" (ADR-0004), so an address is not a file and
+    // the shell is served explicitly. The client decides what an address means.
     const asset = await env.ASSETS.fetch(request);
-    if (asset.status !== 404) {
-      return withSecurityHeaders(asset, url.hostname);
-    }
+    if (asset.status !== 404) return withSecurityHeaders(asset, url.hostname);
     const shell = await env.ASSETS.fetch(new URL("/index.html", url.origin));
     return withSecurityHeaders(shell, url.hostname);
   },

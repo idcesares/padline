@@ -9,8 +9,6 @@ dist/
 .scratch/
 .codebase-memory/
 tsconfig.tsbuildinfo
-test-results/
-playwright-report/
 
 # Per-developer agent tooling. The repo's own conventions live in
 # AGENTS.md and docs/agents/; these are installed trees, not sources.

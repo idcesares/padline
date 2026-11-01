@@ -1,24 +1,16 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
-import path from "node:path";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), cloudflare()],
+  plugins: [cloudflare()],
   server: {
     // Windows reserves 5142-5241 (WinNAT), which swallows Vite's default 5173.
     port: 8788,
     host: "127.0.0.1",
-    // Durable Object writes and browser-test artifacts are runtime output, not
-    // source changes. Watching them reloads the SPA while a Room test runs.
+    // Durable Object writes are runtime output, not source changes. Watching
+    // them reloads the page while a room test runs.
     watch: {
-      ignored: ["**/.wrangler/**", "**/test-results/**", "**/playwright-report/**"],
-    },
-  },
-  resolve: {
-    alias: {
-      "@": path.resolve(import.meta.dirname, "./src"),
+      ignored: ["**/.wrangler/**", "**/test-results/**"],
     },
   },
 });

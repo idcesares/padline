@@ -7,4 +7,4 @@ Name: Padline
 URL: https://padline.page
 Source: https://github.com/idcesares/padline
 License: MIT
-Stack: React, Vite, Tailwind, BlockNote, Yjs, Hono, Cloudflare Workers, Durable Objects
+Stack: TypeScript, Vite, CodeMirror 6, Yjs, Cloudflare Workers, Durable Objects

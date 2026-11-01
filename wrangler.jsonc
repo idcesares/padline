@@ -21,9 +21,9 @@
     // "none", not "single-page-application". This is the setting that keeps a
     // missing hashed chunk from being answered with index.html at 200 — which
     // public/_headers would then stamp immutable for a year, leaving clients
-    // caching HTML as JavaScript after a deploy (ADR-0011). Page routes no
-    // longer get an implicit shell either, so worker/index.ts serves it
-    // explicitly. Do not change this back.
+    // caching HTML as JavaScript after a deploy (ADR-0004). Page routes get no
+    // implicit shell either, so worker/index.ts serves it explicitly. Do not
+    // change this.
     "not_found_handling": "none",
     "binding": "ASSETS",
     // Worker-first for everything except hashed assets: /api, /parties
@@ -36,7 +36,7 @@
     // invokes the Worker, not even on a miss, so a missing chunk gets the
     // asset router's bare 404 and inherits the immutable /assets/* rule from
     // public/_headers. A cached empty 404 is survivable; cached HTML was not.
-    // See ADR-0011.
+    // See ADR-0004.
     "run_worker_first": [
       "/*",
       "!/assets/*"
@@ -47,14 +47,24 @@
       {
         "name": "PadRoom",
         "class_name": "PadRoom"
-      },
-      {
-        // ADR-0018: one instance, addressed by a fixed name. Records reports,
-        // cases, evidence, and the action log; never the enforcement authority.
-        "name": "ModerationLedger",
-        "class_name": "ModerationLedger"
       }
     ]
+  },
+  // The pad index, reports and the action log (ADR-0002). No database_id is
+  // committed: create the database, paste its id here and apply the migrations
+  // before the first deploy. See docs/self-hosting.md.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "padline",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Cloudflare Access settings for /admin and /api/admin/* (ADR-0002). Both
+  // empty means the admin surface answers 403 to everyone. Neither is a secret.
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
   },
   "migrations": [
     {
@@ -62,6 +72,9 @@
       "new_sqlite_classes": ["PadRoom"]
     },
     {
+      // Applied migration: its class stays exported as a placeholder
+      // (worker/moderation-ledger.ts) until a deleted_classes migration
+      // removes it.
       "tag": "v2",
       "new_sqlite_classes": ["ModerationLedger"]
     }
