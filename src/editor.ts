@@ -11,18 +11,19 @@ import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 import { CLOSE, MAX_DOC_BYTES, MSG_PAD_FULL, MSG_PAD_OK, TEXT_KEY } from "../shared/limits";
 import { $, copyText, esc, icon, makeToast } from "./dom";
-import { applyI18n, formatDate, t } from "./i18n";
+import { applyI18n, formatDate, LANG_NAMES, t } from "./i18n";
 import { renderNotice } from "./notice";
 import { renderPreview } from "./preview";
 import {
   getIdentity,
   getLang,
   getTheme,
+  isLang,
+  LANGS,
   PALETTE,
   setLang,
   setTheme,
   touchRecent,
-  type Lang,
   type Theme,
 } from "./prefs";
 
@@ -89,7 +90,7 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
         <button class="it" type="button" role="menuitem" data-act="report">${icon("flag")}<span data-i18n="m.report"></span></button>
         <hr>
         <div class="row"><span data-i18n="m.theme"></span><div class="seg" id="thSeg"><button type="button" data-th="system" data-i18n="th.system"></button><button type="button" data-th="light" data-i18n="th.light"></button><button type="button" data-th="dark" data-i18n="th.dark"></button></div></div>
-        <div class="row"><span data-i18n="m.lang"></span><div class="seg" id="lgSeg"><button type="button" data-lg="en">EN</button><button type="button" data-lg="pt">PT</button></div></div>
+        <div class="row"><span data-i18n="m.lang"></span><select class="lgsel" id="lgSel" data-i18n-aria="m.lang">${LANGS.map((l) => `<option value="${l}" lang="${l}">${LANG_NAMES[l]}</option>`).join("")}</select></div>
       </div>
       <div class="dialog" id="dialog" role="dialog" aria-modal="true" aria-labelledby="shT" hidden>
         <button class="icon x" type="button" id="dlgClose" data-i18n-aria="sh.done">${icon("close")}</button>
@@ -403,10 +404,7 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
     menu.querySelectorAll<HTMLElement>("[data-th]").forEach((b) => {
       b.setAttribute("aria-pressed", String(b.dataset.th === theme));
     });
-    const lang = getLang();
-    menu.querySelectorAll<HTMLElement>("[data-lg]").forEach((b) => {
-      b.setAttribute("aria-pressed", String(b.dataset.lg === lang));
-    });
+    menu.querySelector<HTMLSelectElement>("#lgSel")!.value = getLang();
   }
 
   function download(ext: "md" | "txt") {
@@ -462,9 +460,12 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
       syncMenuState();
       return;
     }
-    const lg = target.closest<HTMLElement>("[data-lg]")?.dataset.lg;
-    if (lg) {
-      setLang(lg as Lang);
+  });
+
+  menu.querySelector<HTMLSelectElement>("#lgSel")!.addEventListener("change", (e) => {
+    const lg = (e.target as HTMLSelectElement).value;
+    if (isLang(lg)) {
+      setLang(lg);
       renderText();
     }
   });

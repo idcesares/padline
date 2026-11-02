@@ -3,7 +3,9 @@
 // localStorage can throw or come back empty (private windows, blocked site
 // data), so every access is wrapped and the app works without it.
 
-export type Lang = "en" | "pt";
+/** Left-to-right languages only; RTL needs layout work and is deferred. */
+export const LANGS = ["en", "pt", "es", "fr", "de", "it"] as const;
+export type Lang = (typeof LANGS)[number];
 export type Theme = "system" | "light" | "dark";
 
 function read(key: string): string | null {
@@ -26,11 +28,24 @@ function write(key: string, value: string): void {
 
 let lang: Lang | null = null;
 
+export function isLang(value: unknown): value is Lang {
+  return (LANGS as readonly unknown[]).includes(value);
+}
+
+/** First of the browser's preferred languages that Padline has, else English. */
+function detectLang(): Lang {
+  const prefs = navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const tag of prefs) {
+    const base = tag?.toLowerCase().split("-")[0];
+    if (isLang(base)) return base;
+  }
+  return "en";
+}
+
 export function getLang(): Lang {
   if (lang) return lang;
   const stored = read("padline:lang");
-  if (stored === "en" || stored === "pt") lang = stored;
-  else lang = navigator.language?.toLowerCase().startsWith("pt") ? "pt" : "en";
+  lang = isLang(stored) ? stored : detectLang();
   return lang;
 }
 

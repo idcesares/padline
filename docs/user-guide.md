@@ -43,7 +43,7 @@ Open the menu and choose **Download .md** or **Download .txt** to save the pad's
 
 ## Theme and language
 
-The menu switches between light, dark and system themes, and between Portuguese and English. Both are remembered on your device.
+The menu switches between light, dark and system themes, and picks the language: English, Português, Español, Français, Deutsch or Italiano. Both are remembered on your device. On a first visit the language follows your browser's preferred languages, falling back to English.
 
 ## Working offline
 

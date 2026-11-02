@@ -25,6 +25,14 @@ Also checked 2026-11-01:
 - [done] EN locale: editor, More menu, share dialog (including the QR's accessible name), About, report form and its reasons, landing hints (slug folding, reserved word, 64-char cap). The EN and PT tables have the same 123 keys, and no accented literals sit outside `src/i18n.ts`.
 - Mobile bar touch targets are 44px (hit area, not visual size, via `::after` in the narrow container query in `src/style.css`); the slug button is vertical-only because it flexes to whatever width is left. The share dialog's own buttons (Copy, Close) were not changed.
 
+## Languages (ADR-0005)
+
+- Spanish, French, German and Italian are machine-drafted and have not been read by native speakers. Get that review before the next deploy that ships them. Points to check: German uses "Pad" (neuter) and informal "du"; Spanish and French use "bloc"; the report reasons and the Admin strings.
+- Checked 2026-11-01 in the in-app browser at 320px: the More menu in all six languages (French "Système" needed tighter theme-button padding, scoped to `html[lang="fr"]`; re-measure if that scoped rule is changed), share dialog, report form and About in German, the choice surviving a reload, an invalid stored value falling back to the browser language. Other screens in ES, FR and IT, and the admin page, were not opened.
+- The picker is a `<select>`, not the mockup's segmented control (six buttons do not fit at 320px). The mockup was not updated.
+- Language can only be changed from the editor menu. The landing, About and report pages have no picker.
+- Not localized: the crawler link preview (`worker/index.ts`) and the static meta tags in `index.html`. Right-to-left languages are deferred.
+
 ## Known gaps
 
 - `src/preview.ts` and `src/qr.ts` have no automated tests (the suite runs in workerd, without a DOM).

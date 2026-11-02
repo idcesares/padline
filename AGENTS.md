@@ -10,7 +10,7 @@ Codex, Cursor, Copilot, and any other tool that reads [agents.md](https://agents
   commits and PRs.
 - [`docs/adr/`](docs/adr/): every non-obvious decision has a numbered ADR:
   product (0001), moderation (0002), lifecycle and limits (0003), delivery and
-  tests (0004).
+  tests (0004), interface languages (0005).
 - [`docs/design/mockup.html`](docs/design/mockup.html): the approved design spec.
   Open it in a browser. Match it; do not redesign.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): setup and PR conventions.

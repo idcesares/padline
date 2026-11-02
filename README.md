@@ -16,7 +16,7 @@ Pads are public by design: anyone who knows an address can read and edit it. Use
 - **Plain text with Markdown highlighting.** CodeMirror 6, fast on a phone.
 - **Offline-safe.** Every visited pad is cached on the device; a dropped connection loses nothing and merges on reconnect.
 - **Not trapped.** Download any pad as `.md` or `.txt`.
-- **Light, dark and system themes**, in Portuguese and English.
+- **Light, dark and system themes**, in English, Portuguese, Spanish, French, German and Italian.
 - **Lean moderation.** A public report form, and an operator page behind Cloudflare Access to empty or block a pad. No content is copied anywhere ([ADR-0002](docs/adr/0002-lean-moderation.md)).
 
 ## How it works

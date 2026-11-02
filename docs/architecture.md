@@ -36,7 +36,7 @@ flowchart LR
 | `src/admin.ts` | The operator page at `/admin`, loaded as a separate chunk. |
 | `src/notice.ts` | Full-screen states: reserved or invalid address, busy, removed. |
 | `src/prefs.ts` | Theme, language, identity and recent pads, in localStorage. |
-| `src/i18n.ts` | PT-BR and EN strings. |
+| `src/i18n.ts` | Strings for six languages (en, pt-BR, es, fr, de, it); `en` defines the keys and the others are typed against it ([ADR-0005](adr/0005-interface-languages.md)). |
 | `src/style.css` | All styles, as design tokens plus components. |
 
 ## Flows

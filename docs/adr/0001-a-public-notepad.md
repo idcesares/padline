@@ -31,7 +31,8 @@ says so in one line. There is no privacy promise and no access control.
 - **Design bar:** the page is the editor; chrome fades while typing; every state
   (connecting, saved, offline, reconnecting, pad full, invalid or reserved
   address, busy, removed) is designed; light and dark follow the system; mobile
-  first; keyboard first; WCAG AA; copy in PT-BR and EN.
+  first; keyboard first; WCAG AA; copy in PT-BR and EN (widened to six
+  languages by [ADR-0005](0005-interface-languages.md)).
 - **Not in v1:** version history, comments, accounts, images and uploads,
   command palette.
 

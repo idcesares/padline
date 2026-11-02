@@ -969,6 +969,19 @@ a.btn {
   padding: 8px 12px;
   font-size: 0.9375rem;
 }
+/* French "Système" is the widest label; tighter padding keeps the row inside a 320px menu */
+html[lang="fr"] .menu .seg button {
+  padding-inline: 8px;
+}
+.menu .lgsel {
+  height: 36px;
+  min-width: 0;
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  background: var(--paper);
+  padding-inline: 8px;
+  font-size: 0.875rem;
+}
 .menu hr {
   border: 0;
   border-top: 1px solid var(--line);
