@@ -1023,6 +1023,29 @@ a.btn {
   .bar #pvBtn .lbl {
     display: none;
   }
+  /* 44px touch targets without growing the bar: the 8px gaps absorb the extra 4px per side */
+  .bar .logo,
+  .bar .slug,
+  .bar .btn.primary,
+  .bar #pvBtn,
+  .bar .icon {
+    position: relative;
+  }
+  .bar .logo::after,
+  .bar .slug::after,
+  .bar .btn.primary::after,
+  .bar #pvBtn::after,
+  .bar .icon::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
+  .bar .logo::after {
+    inset: -5px -4px;
+  }
+  .bar .slug::after {
+    inset: -4px 0;
+  }
   /* no label here, so the icon says what the tap does: back to the editor */
   .bar #pvBtn[aria-pressed="true"] .i-view {
     display: none;
