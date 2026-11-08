@@ -138,6 +138,21 @@ const en = {
   "a.denied": "Access denied.",
   "a.gone": "That pad is not in the index.",
   "a.already": "That pad is already blocked.",
+  "a.f.blocked": "Blocked",
+  "a.refresh": "Refresh",
+  "a.loading": "Loading…",
+  "a.shown": "{n} shown",
+  "a.shownCap": "First {n} shown. Search to narrow the list.",
+  "a.copy": "Copy address",
+  "a.copied": "Address copied.",
+  "a.live": "Live",
+  "a.ofcap": "{pct}% of the size limit",
+  "a.overcap": "Over the size limit",
+  "a.logNone": "No actions yet.",
+  "a.done.clear": "Content deleted.",
+  "a.done.block": "Pad blocked.",
+  "a.done.dismiss": "Reports dismissed.",
+  "a.kbd": "↑ ↓ move · / search · Esc cancel",
 };
 
 type Key = keyof typeof en;
@@ -278,6 +293,21 @@ const pt: Table = {
   "a.denied": "Acesso negado.",
   "a.gone": "Esse pad não está no índice.",
   "a.already": "Esse pad já está bloqueado.",
+  "a.f.blocked": "Bloqueados",
+  "a.refresh": "Atualizar",
+  "a.loading": "Carregando…",
+  "a.shown": "{n} exibidos",
+  "a.shownCap": "Exibindo os primeiros {n}. Busque para reduzir a lista.",
+  "a.copy": "Copiar endereço",
+  "a.copied": "Endereço copiado.",
+  "a.live": "Ativo",
+  "a.ofcap": "{pct}% do limite de tamanho",
+  "a.overcap": "Acima do limite de tamanho",
+  "a.logNone": "Nenhuma ação ainda.",
+  "a.done.clear": "Conteúdo apagado.",
+  "a.done.block": "Bloco bloqueado.",
+  "a.done.dismiss": "Denúncias descartadas.",
+  "a.kbd": "↑ ↓ mover · / buscar · Esc cancelar",
 };
 
 // es, fr, de and it are machine-drafted and not yet read by native speakers
@@ -418,6 +448,21 @@ const es: Table = {
   "a.denied": "Acceso denegado.",
   "a.gone": "Ese bloc no está en el índice.",
   "a.already": "Ese bloc ya está bloqueado.",
+  "a.f.blocked": "Bloqueados",
+  "a.refresh": "Actualizar",
+  "a.loading": "Cargando…",
+  "a.shown": "{n} mostrados",
+  "a.shownCap": "Se muestran los primeros {n}. Busca para acotar la lista.",
+  "a.copy": "Copiar dirección",
+  "a.copied": "Dirección copiada.",
+  "a.live": "Activo",
+  "a.ofcap": "{pct}% del límite de tamaño",
+  "a.overcap": "Por encima del límite de tamaño",
+  "a.logNone": "Aún no hay acciones.",
+  "a.done.clear": "Contenido borrado.",
+  "a.done.block": "Bloc bloqueado.",
+  "a.done.dismiss": "Denuncias descartadas.",
+  "a.kbd": "↑ ↓ mover · / buscar · Esc cancelar",
 };
 
 const fr: Table = {
@@ -555,6 +600,21 @@ const fr: Table = {
   "a.denied": "Accès refusé.",
   "a.gone": "Ce bloc n'est pas dans l'index.",
   "a.already": "Ce bloc est déjà bloqué.",
+  "a.f.blocked": "Bloqués",
+  "a.refresh": "Actualiser",
+  "a.loading": "Chargement…",
+  "a.shown": "{n} affichés",
+  "a.shownCap": "Les {n} premiers sont affichés. Cherchez pour réduire la liste.",
+  "a.copy": "Copier l'adresse",
+  "a.copied": "Adresse copiée.",
+  "a.live": "Actif",
+  "a.ofcap": "{pct} % de la limite de taille",
+  "a.overcap": "Au-dessus de la limite de taille",
+  "a.logNone": "Aucune action pour l'instant.",
+  "a.done.clear": "Contenu supprimé.",
+  "a.done.block": "Bloc bloqué.",
+  "a.done.dismiss": "Signalements écartés.",
+  "a.kbd": "↑ ↓ naviguer · / chercher · Échap annuler",
 };
 
 const de: Table = {
@@ -692,6 +752,21 @@ const de: Table = {
   "a.denied": "Zugriff verweigert.",
   "a.gone": "Dieses Pad ist nicht im Index.",
   "a.already": "Dieses Pad ist bereits gesperrt.",
+  "a.f.blocked": "Gesperrt",
+  "a.refresh": "Aktualisieren",
+  "a.loading": "Lädt…",
+  "a.shown": "{n} angezeigt",
+  "a.shownCap": "Die ersten {n} werden angezeigt. Suche, um die Liste einzugrenzen.",
+  "a.copy": "Adresse kopieren",
+  "a.copied": "Adresse kopiert.",
+  "a.live": "Aktiv",
+  "a.ofcap": "{pct} % des Größenlimits",
+  "a.overcap": "Über dem Größenlimit",
+  "a.logNone": "Noch keine Aktionen.",
+  "a.done.clear": "Inhalt gelöscht.",
+  "a.done.block": "Pad gesperrt.",
+  "a.done.dismiss": "Meldungen verworfen.",
+  "a.kbd": "↑ ↓ bewegen · / suchen · Esc abbrechen",
 };
 
 const it: Table = {
@@ -829,6 +904,21 @@ const it: Table = {
   "a.denied": "Accesso negato.",
   "a.gone": "Questo blocco non è nell'indice.",
   "a.already": "Questo blocco è già bloccato.",
+  "a.f.blocked": "Bloccati",
+  "a.refresh": "Aggiorna",
+  "a.loading": "Caricamento…",
+  "a.shown": "{n} mostrati",
+  "a.shownCap": "Sono mostrati i primi {n}. Cerca per restringere l'elenco.",
+  "a.copy": "Copia indirizzo",
+  "a.copied": "Indirizzo copiato.",
+  "a.live": "Attivo",
+  "a.ofcap": "{pct}% del limite di dimensione",
+  "a.overcap": "Oltre il limite di dimensione",
+  "a.logNone": "Ancora nessuna azione.",
+  "a.done.clear": "Contenuto eliminato.",
+  "a.done.block": "Blocco bloccato.",
+  "a.done.dismiss": "Segnalazioni archiviate.",
+  "a.kbd": "↑ ↓ spostare · / cercare · Esc annullare",
 };
 
 const tables: Record<Lang, Table> = { en, pt, es, fr, de, it };
@@ -888,5 +978,13 @@ export function ago(at: number, now = Date.now()): string {
 export function formatDate(at: number): string {
   return new Intl.DateTimeFormat(LOCALE[getLang()], {
     dateStyle: "medium",
+  }).format(at);
+}
+
+/** Date and time, for the operator's log where two entries can share a day. */
+export function formatDateTime(at: number): string {
+  return new Intl.DateTimeFormat(LOCALE[getLang()], {
+    dateStyle: "medium",
+    timeStyle: "short",
   }).format(at);
 }

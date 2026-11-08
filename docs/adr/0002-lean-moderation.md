@@ -17,9 +17,10 @@ the floor: a way to report, a fast way to act, and a short record.
   reads and 100k writes a day and 5 GB, far above this load. Past a cap, queries
   fail until 00:00 UTC; the pad itself keeps working because the room never
   depends on the index.
-- **Admin page** behind Cloudflare Access: lists recent, largest, most active
-  and reported pads; shows an excerpt; lets the operator open, delete the
-  content of, or block a pad.
+- **Admin page** behind Cloudflare Access: lists recent, largest, most active,
+  reported and blocked pads, with a count on the active, reported and blocked
+  tabs (numbers only, no new table); shows an excerpt; lets the operator open,
+  delete the content of, or block a pad.
 - **Three tables:** `pads`, `reports`, `actions`. None holds pad content or
   evidence copies. `actions` rows are never updated or deleted.
 - **Public report page** (`/report`): a category from a short fixed list, a

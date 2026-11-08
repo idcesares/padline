@@ -37,7 +37,8 @@ Every call needs a valid Cloudflare Access JWT (`Cf-Access-Jwt-Assertion`); with
 
 | Request | Response |
 | --- | --- |
-| `GET /api/admin/pads?filter=&q=` | `{ "pads": [...] }`. `filter` is `recent`, `largest`, `active` or `reported`. |
+| `GET /api/admin/pads?filter=&q=` | `{ "pads": [...] }`. `filter` is `recent`, `largest`, `active`, `reported` or `blocked`. At most 50 rows. |
+| `GET /api/admin/counts` | `{ reported, blocked, active }`: numbers only. `reported` is distinct slugs with an open report, `blocked` is pads with status `blocked`, `active` is pads edited in the last 24 hours. Feeds the tab badges. |
 | `GET /api/admin/pads/<slug>` | `{ slug, pad, reports, excerpt }`; `excerpt` is `null` when the pad has no text or is blocked. |
 | `POST /api/admin/pads/<slug>/clear` | Empties the document in the room, then logs the action. `409` `{"error":"blocked"}` if the pad is blocked; `404` `{"error":"not-found"}` if the index has never seen the slug. |
 | `POST /api/admin/pads/<slug>/block` | Body `{ "category" }`. Deletes the document, closes sockets with `4404`, logs the action. Works on a slug the index has not seen. `409` `{"error":"blocked"}` if already blocked: the first category and date stay. |

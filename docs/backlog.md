@@ -34,6 +34,16 @@ Also checked 2026-11-01:
 - Language can only be changed from the editor menu. The landing, About and report pages have no picker.
 - Not localized: the crawler link preview (`worker/index.ts`) and the static meta tags in `index.html`. Right-to-left languages are deferred.
 
+## Admin view pass (2026-11-08)
+
+Stays inside the ADR-0002 cap: counts and a fifth list filter, no cases, exports, bulk actions, evidence or new categories.
+
+- New: `blocked` filter, `GET /api/admin/counts` and tab badges, refresh button, "N shown" footer (says when the 50-row cap is hit), size meter against the 1 MiB cap, copy-address button, exact time on hover, date and time plus an action chip in the log, click a log slug to select that pad, success message after each action, keyboard (`/` search, up and down move the selection when focus is in the list and no confirm is open, Esc cancels a confirm), sticky detail pane on wide screens, a loading state, and a guard against stale search responses.
+- Fixed: `aria-selected` on `<tr>` (invalid) is now `aria-current` on the row button; search no longer reloads the detail and log.
+- Diverges from `docs/design/mockup.html` (not updated): tab count badges, refresh button, size meters, copy button, footer line, sticky detail.
+- 15 new `a.*` strings in all six languages. ES, FR, DE and IT join the native-review debt above.
+- Checked in the in-app browser against a seeded local D1: 320px in all six languages (no overflow, tabs wrap), light and dark, 1280px two-column layout with the sticky detail, block, dismiss, Esc cancel, arrow keys, `/`, blocked filter, and live counts. Clear was not exercised in the browser (the room is empty on the dev server); it has integration tests. `npm test` (53) and `npm run build` pass. A failed detail request (error state in the pane) was not triggered in the browser. The sticky pane was checked by computed style only, not by scrolling a tall list.
+
 ## Known gaps
 
 - `src/preview.ts` and `src/qr.ts` have no automated tests (the suite runs in workerd, without a DOM).

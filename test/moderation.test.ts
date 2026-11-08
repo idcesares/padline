@@ -392,6 +392,57 @@ describe("operator actions", () => {
   });
 });
 
+describe("admin tab counts and the blocked list", () => {
+  type Counts = { reported: number; blocked: number; active: number };
+  const counts = async () => (await admin("counts")).json<Counts>();
+  const list = async (query: string) =>
+    (await admin(`pads?${query}`)).json<{ pads: { slug: string; status: string }[] }>();
+
+  it("counts open reports by pad, blocked pads and pads edited in the last day", async () => {
+    serveJwks();
+    const before = await counts();
+    const reported = uniqueSlug();
+    await report({ slug: reported, category: "spam" });
+    await report({ slug: reported, category: "scam" });
+    const blocked = uniqueSlug();
+    await typeInto(blocked, "x");
+    await admin(`pads/${blocked}/block`, { method: "POST", body: JSON.stringify({ category: "spam" }) });
+
+    const after = await counts();
+    expect(after.reported).toBe(before.reported + 1);
+    expect(after.blocked).toBe(before.blocked + 1);
+    expect(after.active).toBe(before.active + 1);
+
+    await admin(`pads/${reported}/dismiss`, { method: "POST" });
+    expect((await counts()).reported).toBe(before.reported);
+  });
+
+  it("answers counts as numbers only", async () => {
+    serveJwks();
+    const body = await counts();
+    expect(Object.keys(body).sort()).toEqual(["active", "blocked", "reported"]);
+    for (const value of Object.values(body)) expect(typeof value).toBe("number");
+  });
+
+  it("lists only blocked pads under the blocked filter, and keeps the search", async () => {
+    serveJwks();
+    const blocked = uniqueSlug();
+    const live = uniqueSlug();
+    await typeInto(blocked, "x");
+    await typeInto(live, "y");
+    await admin(`pads/${blocked}/block`, { method: "POST", body: JSON.stringify({ category: "other" }) });
+
+    const hit = await list(`filter=blocked&q=${blocked}`);
+    expect(hit.pads.map((p) => p.slug)).toEqual([blocked]);
+    expect(hit.pads[0].status).toBe("blocked");
+    expect((await list(`filter=blocked&q=${live}`)).pads).toEqual([]);
+  });
+
+  it("refuses counts without an assertion", async () => {
+    expect((await admin("counts", {}, false)).status).toBe(401);
+  });
+});
+
 describe("invariants in the source", () => {
   const sources = import.meta.glob("../worker/*.ts", {
     query: "?raw",

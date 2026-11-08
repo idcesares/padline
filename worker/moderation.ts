@@ -5,6 +5,7 @@
 import { getServerByName } from "partyserver";
 import {
   ADMIN_FILTERS,
+  ADMIN_LIST_LIMIT as LIST_LIMIT,
   type AdminFilter,
   CONTACT_MAX,
   NOTE_MAX,
@@ -15,7 +16,6 @@ import { authorizeAdmin } from "./access";
 import type { Env, PadRoom } from "./pad-room";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LIST_LIMIT = 50;
 const LOG_LIMIT = 30;
 /** Reports kept open per slug. Past it a report is accepted and dropped. */
 const OPEN_REPORTS_PER_SLUG = 50;
@@ -149,10 +149,27 @@ function listQuery(filter: AdminFilter, q: string, now: number) {
        FROM pads p
       WHERE (?1 IS NULL OR p.slug LIKE ?1)
         AND (?2 IS NULL OR p.last_edit > ?2)
+        AND (?3 IS NULL OR p.status = ?3)
       ORDER BY ${order}
       LIMIT ${LIST_LIMIT}`,
-    [like, filter === "active" ? now - DAY_MS : null],
+    [like, filter === "active" ? now - DAY_MS : null, filter === "blocked" ? "blocked" : null],
   );
+}
+
+/**
+ * The numbers on the filter tabs. Counts only: no slug and no text. "reported"
+ * counts pads with an open report, matching the rows the reported tab lists.
+ */
+async function adminCounts(env: Env, now: number) {
+  const row = await env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(DISTINCT slug) FROM reports WHERE resolved_at IS NULL) AS reported,
+       (SELECT COUNT(*) FROM pads WHERE status = 'blocked') AS blocked,
+       (SELECT COUNT(*) FROM pads WHERE last_edit > ?1) AS active`,
+  )
+    .bind(now - DAY_MS)
+    .first<{ reported: number; blocked: number; active: number }>();
+  return { reported: row?.reported ?? 0, blocked: row?.blocked ?? 0, active: row?.active ?? 0 };
 }
 
 async function roomOf(env: Env, slug: string) {
@@ -193,6 +210,10 @@ async function adminResponse(request: Request, env: Env): Promise<Response> {
       const { sql, params } = listQuery(filter, q, now);
       const { results } = await env.DB.prepare(sql).bind(...params).all<PadRow>();
       return json({ pads: results });
+    }
+
+    if (isRead && path[0] === "counts" && path.length === 1) {
+      return json(await adminCounts(env, now));
     }
 
     if (isRead && path[0] === "actions" && path.length === 1) {
