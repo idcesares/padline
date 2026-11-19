@@ -72,7 +72,7 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
         <div class="avatars" id="avatars" role="img"></div>
         <span class="status" id="status" data-s="connecting" role="status"><i></i><span id="statusText"></span></span>
         <button class="btn ghost" type="button" id="pvBtn" aria-pressed="false"><span class="i-view">${icon("eye")}</span><span class="i-back">${icon("edit")}</span><span class="lbl" data-i18n="e.preview"></span></button>
-        <button class="btn primary" type="button" id="shBtn">${icon("share")}<span class="lbl" data-i18n="e.share"></span></button>
+        <button class="btn primary" type="button" id="shBtn" data-i18n-aria="e.share">${icon("share")}<span class="lbl" data-i18n="e.share"></span></button>
         <button class="icon" type="button" id="moreBtn" aria-haspopup="true" aria-expanded="false" data-i18n-aria="e.more">${icon("more")}</button>
       </header>
       <div class="banners" id="banners" hidden></div>
@@ -424,6 +424,8 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
 
   function renderText() {
     applyI18n(app);
+    $("#slugBtn", app).setAttribute("aria-label", `${t("e.copyLink")}: ${slug}`);
+    $("#slugBtn", app).setAttribute("title", slug);
     shCopyT.textContent = t("sh.copy");
     renderStatus();
     renderMeta();
@@ -535,7 +537,12 @@ export function mountEditor(app: HTMLElement, slug: string, nav: EditorNav): () 
   });
 
   $("#slugBtn", app).addEventListener("click", async () => {
-    toast((await copyLink()) ? t("toast.copied") : t("toast.nocopy"));
+    if (await copyLink()) {
+      toast(t("toast.copied"));
+    } else if (!disposed) {
+      openDialog($("#slugBtn", app));
+      toast(t("toast.nocopy"));
+    }
   });
 
   $("#homeBtn", app).addEventListener("click", nav.home);

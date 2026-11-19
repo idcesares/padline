@@ -366,6 +366,10 @@ a.btn {
 }
 
 /* ---------- landing ---------- */
+.route-loading {
+  padding: 24px;
+  color: var(--ink-2);
+}
 .landing {
   min-height: 100%;
   display: grid;
@@ -464,13 +468,17 @@ a.btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 34px;
+  min-height: 44px;
   padding-inline: 12px;
   border-radius: 999px;
   border: 1px solid var(--line-2);
   background: var(--paper);
   font: 0.875rem var(--f-mono);
   color: var(--ink);
+}
+.rand .icon {
+  width: 44px;
+  height: 44px;
 }
 .chip:hover {
   border-color: var(--accent);
@@ -546,7 +554,17 @@ a.btn {
 .demo .dbody {
   padding: 22px 22px 30px;
   font-size: 1rem;
-  line-height: 1.7;
+  line-height: 2.1;
+}
+.demo .rc i {
+  left: 0;
+  transform: translateX(-100%);
+}
+@container vp (max-width: 1100px) {
+  /* The narrow demo keeps the cursor marks; names would overlap wrapped text. */
+  .demo .rc i {
+    display: none;
+  }
 }
 .foot {
   display: flex;

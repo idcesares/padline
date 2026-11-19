@@ -27,9 +27,10 @@ flowchart LR
 | `shared/moderation.ts` | Report categories, field limits, admin filters. |
 | `migrations/` | D1 schema: `pads`, `reports`, `actions`. |
 | `worker/moderation-ledger.ts` | Inert placeholder for an applied migration; see [Configuration](reference/configuration.md#migrations). |
-| `src/main.ts` | Router: landing or pad, by `location.pathname`. Disposes the previous view. |
+| `src/main.ts` | Router: loads the editor and admin on demand and disposes the previous view. Failed loads offer retry. |
+| `src/route-loader.ts` | Prevents a delayed route load from mounting after navigation. |
 | `src/landing.ts` | The landing page: address input, "Opens as ..." preview, random address, recent pads. |
-| `src/editor.ts` | The pad: CodeMirror, Yjs, sync provider, presence, status, banners, menu, share dialog. |
+| `src/editor.ts` | The pad, loaded on demand: CodeMirror, Yjs, sync provider, presence, status, banners, menu, share dialog. |
 | `src/preview.ts` | Markdown preview: the editor's Lezer parse rendered with DOM calls and `textContent` only, never as HTML. |
 | `src/about.ts` | The static About page at `/about`. |
 | `src/report.ts` | The public report form at `/report`. |

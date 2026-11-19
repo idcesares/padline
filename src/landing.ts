@@ -5,11 +5,11 @@ import { getRecent } from "./prefs";
 
 /** The demo card shows what a live pad looks like; it is static and decorative. */
 const DEMO = `
-  <div class="l h1"><span class="mk"># </span>Sprint notes</div>
-  <div class="l">Demo on <span class="mk">**</span><span class="bold">Thursday</span><span class="mk">**</span>, 14:00<span class="rc" style="--c:var(--p2)"><i>Teal Heron</i></span></div>
-  <div class="l li"><span class="mk">- </span>Ship the share sheet</div>
-  <div class="l li"><span class="mk">- [x] </span>Fix the <span class="rsel" style="--c:var(--p1)">reconnect</span><span class="rc" style="--c:var(--p1)"><i>Amber Fox</i></span> banner</div>
-  <div class="l li"><span class="mk">- </span>Ask for a name for the logo</div>`;
+  <div class="l h1"><span class="mk"># </span><span data-i18n="demo.title"></span></div>
+  <div class="l"><span data-i18n="demo.when"></span> <span class="mk">**</span><span class="bold" data-i18n="demo.day"></span><span class="mk">**</span>, 14:00<span class="rc" style="--c:var(--p2)"><i>Teal Heron</i></span></div>
+  <div class="l li"><span class="mk">- </span><span data-i18n="demo.share"></span></div>
+  <div class="l li"><span class="mk">- [x] </span><span data-i18n="demo.fix"></span> <span class="rsel" style="--c:var(--p1)" data-i18n="demo.reconnect"></span><span class="rc" style="--c:var(--p1)"><i>Amber Fox</i></span></div>
+  <div class="l li"><span class="mk">- </span><span data-i18n="demo.logo"></span></div>`;
 
 export function mountLanding(app: HTMLElement, go: (slug: string) => void): () => void {
   app.innerHTML = `

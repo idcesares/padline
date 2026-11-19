@@ -1,12 +1,12 @@
 import "./style.css";
 import { checkSlug, normalizeSlug } from "../shared/slug";
 import { mountAbout } from "./about";
-import { mountEditor } from "./editor";
 import { t } from "./i18n";
 import { mountLanding } from "./landing";
 import { renderNotice } from "./notice";
 import { applyTheme } from "./prefs";
 import { mountReport } from "./report";
+import { createRouteLoader } from "./route-loader";
 
 applyTheme();
 
@@ -15,8 +15,8 @@ if (!app) throw new Error("missing #app");
 
 const TITLE = "Padline";
 let dispose: (() => void) | null = null;
-/** Bumped on every render so a late-arriving admin chunk cannot mount over a newer view. */
-let adminMount = 0;
+/** Discard chunks that finish after the visitor has navigated elsewhere. */
+const routeLoader = createRouteLoader();
 
 function decodePath(pathname: string): string {
   const trimmed = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
@@ -39,7 +39,7 @@ function home(): void {
 function render(): void {
   dispose?.();
   dispose = null;
-  adminMount++;
+  routeLoader.cancel();
   app!.replaceChildren();
 
   const raw = decodePath(location.pathname);
@@ -63,10 +63,7 @@ function render(): void {
   }
   if (raw === "admin") {
     document.title = `Admin · ${TITLE}`;
-    const mounted = ++adminMount;
-    // Lazy: visitors never download the operator's page.
-    void import("./admin").then(({ mountAdmin }) => {
-      if (mounted !== adminMount) return;
+    loadView(() => import("./admin"), ({ mountAdmin }) => {
       dispose = mountAdmin(app!, (slug) => navigate(`/${slug}`));
     });
     return;
@@ -86,10 +83,30 @@ function render(): void {
   }
 
   if (slug !== raw) history.replaceState(null, "", `/${slug}`);
-  dispose = mountEditor(app!, slug, {
-    home,
-    reload: render,
-    report: () => navigate(`/report?pad=${encodeURIComponent(slug)}`),
+  loadView(() => import("./editor"), ({ mountEditor }) => {
+    dispose = mountEditor(app!, slug, {
+      home,
+      reload: render,
+      report: () => navigate(`/report?pad=${encodeURIComponent(slug)}`),
+    });
+  });
+}
+
+function loadView<T>(load: () => Promise<T>, mount: (module: T) => void): void {
+  const status = document.createElement("p");
+  status.className = "route-loading";
+  status.setAttribute("role", "status");
+  status.textContent = t("route.loading");
+  app!.replaceChildren(status);
+  void routeLoader.load(load, mount, () => {
+    renderNotice(app!, {
+      title: t("route.error"),
+      body: t("route.errorBody"),
+      actions: [
+        { label: t("st.retry"), primary: true, run: render },
+        { label: t("e.home"), run: home },
+      ],
+    });
   });
 }
 

@@ -35,7 +35,9 @@ While you type, the top bar fades out of the way. Move the pointer or press into
 
 ## Sharing
 
-Select **Share** to copy the link. Clicking the address in the top bar also copies it. Anyone with the link can edit.
+Select **Share** to see the full address and copy the link. Clicking the address in the top bar also copies it, even when the address is shortened to fit the screen. Anyone with the link can edit.
+
+If copying is unavailable, the Share dialog opens with the address selected so you can copy it yourself.
 
 ## Download
 
